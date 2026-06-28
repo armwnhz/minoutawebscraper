@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ============================================================
-# 🕷️ Minouta Web Scraper - Core + CLI + API + Database
+# 🕷️ Minouta Web Scraper - Core + CLI + API + Web UI
 # ============================================================
 
 import sys
@@ -24,7 +24,7 @@ from rich import box
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, JSON, Text
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -49,9 +49,8 @@ _EMAIL_REGEX = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.
 _INSTAGRAM_REGEX = re.compile(r'https?://(?:www\.)?instagram\.com/([a-zA-Z0-9_.]+)/?', re.IGNORECASE)
 _YOUTUBE_REGEX = re.compile(r'https?://(?:www\.)?youtube\.com/(?:@|c/|user/|channel/)([a-zA-Z0-9_-]+)/?', re.IGNORECASE)
 
-# ❌ تابع extract_links به‌طور کامل غیرفعال شد تا خطای bool برطرف بشه
+# لینک غیرفعال شد (خطای bool)
 def extract_links(text: str, base_url: str = ""):
-    # برای جلوگیری از هرگونه خطا، همیشه لیست خالی برمی‌گردونیم
     return []
 
 def _normalize_phone(num: str) -> str:
@@ -218,7 +217,7 @@ class DatabaseManager:
         self.session.close()
 
 # ============================================================
-# 🎨 رابط کاربری با Rich (CLI)
+# 🎨 رابط کاربری با Rich (CLI) - همان کد قبلی
 # ============================================================
 
 console = Console()
@@ -420,7 +419,469 @@ class RichCLI:
             console.print(f"[red]Export error: {e}[/]")
 
 # ============================================================
-# 🌐 سرور وب (FastAPI) با CORS و دیتابیس
+# 🌐 صفحه وب - رابط کاربری گرافیکی
+# ============================================================
+
+HTML_PAGE = """
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🕷️ Minouta Web Scraper</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+            color: #e8e8e8;
+        }
+        .container {
+            max-width: 900px;
+            width: 100%;
+            background: rgba(255,255,255,0.05);
+            backdrop-filter: blur(20px);
+            border-radius: 24px;
+            padding: 40px;
+            border: 1px solid rgba(79, 172, 254, 0.15);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .header h1 {
+            font-size: 2.5rem;
+            background: linear-gradient(135deg, #4facfe, #00f2fe);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .header p {
+            color: #a0b4c8;
+            margin-top: 8px;
+            font-size: 1.1rem;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 6px;
+            color: #b0c4de;
+            font-size: 0.95rem;
+        }
+        input[type="text"], input[type="number"] {
+            width: 100%;
+            padding: 12px 16px;
+            background: rgba(255,255,255,0.07);
+            border: 2px solid #2a3f5f;
+            border-radius: 12px;
+            color: #f0f0f0;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            outline: none;
+        }
+        input[type="text"]:focus, input[type="number"]:focus {
+            border-color: #4facfe;
+            background: rgba(255,255,255,0.12);
+            box-shadow: 0 0 20px rgba(79, 172, 254, 0.15);
+        }
+        .checkbox-group {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 12px;
+            margin: 10px 0 20px 0;
+        }
+        .checkbox-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 14px;
+            background: rgba(255,255,255,0.04);
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.06);
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        .checkbox-item:hover {
+            background: rgba(255,255,255,0.08);
+            border-color: rgba(79, 172, 254, 0.3);
+        }
+        .checkbox-item input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            accent-color: #4facfe;
+            cursor: pointer;
+        }
+        .checkbox-item label {
+            margin: 0;
+            cursor: pointer;
+            font-weight: 500;
+            font-size: 0.95rem;
+            color: #d0d8ec;
+        }
+        .btn {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #4facfe, #00f2fe);
+            border: none;
+            border-radius: 12px;
+            color: #1a1a2e;
+            font-size: 1.2rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 30px rgba(79, 172, 254, 0.3);
+        }
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            font-size: 1.1rem;
+            color: #4facfe;
+        }
+        .loading.active {
+            display: block;
+        }
+        .spinner {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            border: 4px solid rgba(79, 172, 254, 0.15);
+            border-top-color: #4facfe;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-bottom: 12px;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .results {
+            margin-top: 30px;
+            display: none;
+        }
+        .results.active {
+            display: block;
+        }
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: rgba(0,0,0,0.3);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .results-table th {
+            background: rgba(79, 172, 254, 0.15);
+            padding: 12px 16px;
+            text-align: right;
+            font-weight: 600;
+            color: #b0c4de;
+            border-bottom: 2px solid rgba(79, 172, 254, 0.1);
+        }
+        .results-table td {
+            padding: 12px 16px;
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+            color: #e0e8f0;
+        }
+        .results-table tr:hover td {
+            background: rgba(79, 172, 254, 0.05);
+        }
+        .results-table .type-cell {
+            color: #8ab4ff;
+            font-weight: 500;
+        }
+        .results-table .value-cell {
+            font-family: 'Consolas', monospace;
+            font-size: 0.9rem;
+        }
+        .error {
+            background: rgba(255, 70, 70, 0.15);
+            border: 1px solid rgba(255, 70, 70, 0.3);
+            padding: 16px;
+            border-radius: 12px;
+            color: #ff6b6b;
+            margin: 10px 0;
+            display: none;
+        }
+        .error.active {
+            display: block;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid rgba(255,255,255,0.06);
+            color: #6a8aaa;
+            font-size: 0.85rem;
+        }
+        .stats {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            justify-content: center;
+            margin: 15px 0;
+        }
+        .stat-card {
+            background: rgba(255,255,255,0.04);
+            padding: 8px 16px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.06);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9rem;
+        }
+        .stat-card .count {
+            font-weight: 700;
+            color: #4facfe;
+            font-size: 1.2rem;
+        }
+        @media (max-width: 600px) {
+            .container {
+                padding: 20px;
+            }
+            .header h1 {
+                font-size: 1.8rem;
+            }
+            .checkbox-group {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🕷️ Minouta Web Scraper</h1>
+            <p>استخراج اطلاعات از وب‌سایت‌ها با یک کلیک</p>
+        </div>
+
+        <div id="error" class="error"></div>
+
+        <form id="scrapeForm">
+            <div class="form-group">
+                <label>🌐 آدرس وب‌سایت</label>
+                <input type="text" id="urlInput" placeholder="مثلاً: hamzehalizadeh.ir" required>
+            </div>
+
+            <div class="form-group">
+                <label>🔍 انتخاب داده‌ها برای استخراج</label>
+                <div class="checkbox-group">
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="chkMobile" checked>
+                        <label for="chkMobile">📱 موبایل</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="chkLandline" checked>
+                        <label for="chkLandline">🏠 ثابت</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="chkEmail" checked>
+                        <label for="chkEmail">✉️ ایمیل</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="chkInstagram" checked>
+                        <label for="chkInstagram">📸 اینستاگرام</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" id="chkYoutube" checked>
+                        <label for="chkYoutube">▶️ یوتیوب</label>
+                    </div>
+                    <div class="checkbox-item" style="opacity:0.5;">
+                        <input type="checkbox" id="chkLinks" disabled>
+                        <label for="chkLinks">🔗 لینک (غیرفعال)</label>
+                    </div>
+                </div>
+            </div>
+
+            <button type="submit" class="btn" id="submitBtn">🚀 شروع اسکرپ</button>
+        </form>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <div>در حال اسکرپ کردن... لطفاً صبر کنید</div>
+        </div>
+
+        <div class="results" id="results">
+            <div class="stats" id="stats"></div>
+            <table class="results-table" id="resultTable">
+                <thead>
+                    <tr>
+                        <th>نوع</th>
+                        <th>مقدار</th>
+                    </tr>
+                </thead>
+                <tbody id="resultBody">
+                </tbody>
+            </table>
+        </div>
+
+        <div class="footer">
+            ⚡ طراحی شده توسط arman hajizadeh
+        </div>
+    </div>
+
+    <script>
+        const form = document.getElementById('scrapeForm');
+        const urlInput = document.getElementById('urlInput');
+        const submitBtn = document.getElementById('submitBtn');
+        const loading = document.getElementById('loading');
+        const results = document.getElementById('results');
+        const resultBody = document.getElementById('resultBody');
+        const stats = document.getElementById('stats');
+        const errorDiv = document.getElementById('error');
+
+        const API_BASE = window.location.origin;
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const url = urlInput.value.trim();
+            if (!url) {
+                showError('لطفاً آدرس وب‌سایت را وارد کنید.');
+                return;
+            }
+
+            const extractMobile = document.getElementById('chkMobile').checked;
+            const extractLandline = document.getElementById('chkLandline').checked;
+            const extractEmail = document.getElementById('chkEmail').checked;
+            const extractInstagram = document.getElementById('chkInstagram').checked;
+            const extractYoutube = document.getElementById('chkYoutube').checked;
+
+            submitBtn.disabled = true;
+            loading.classList.add('active');
+            results.classList.remove('active');
+            errorDiv.classList.remove('active');
+
+            try {
+                const response = await fetch(`${API_BASE}/scrape`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        urls: [url],
+                        extract_mobile: extractMobile,
+                        extract_landline: extractLandline,
+                        extract_email: extractEmail,
+                        extract_links: false,
+                        extract_instagram: extractInstagram,
+                        extract_youtube: extractYoutube,
+                        save_history: true
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    showError(`خطا: ${data.detail || 'مشکل در ارتباط با سرور'}`);
+                    return;
+                }
+
+                if (data.results && data.results.length > 0) {
+                    const result = data.results[0];
+                    if (result.error) {
+                        showError(`خطا: ${result.error}`);
+                        return;
+                    }
+                    displayResults(result);
+                } else {
+                    showError('نتیجه‌ای دریافت نشد.');
+                }
+
+            } catch (err) {
+                showError(`خطا در ارتباط با سرور: ${err.message}`);
+            } finally {
+                submitBtn.disabled = false;
+                loading.classList.remove('active');
+            }
+        });
+
+        function displayResults(result) {
+            const rows = [];
+            const categories = [
+                { key: 'mobiles', label: '📱 موبایل', icon: '📱' },
+                { key: 'landlines', label: '🏠 ثابت', icon: '🏠' },
+                { key: 'emails', label: '✉️ ایمیل', icon: '✉️' },
+                { key: 'instagram', label: '📸 اینستاگرام', icon: '📸' },
+                { key: 'youtube', label: '▶️ یوتیوب', icon: '▶️' }
+            ];
+
+            let total = 0;
+            let statsHTML = '';
+
+            categories.forEach(cat => {
+                const values = result[cat.key] || [];
+                const count = values.length;
+                total += count;
+                statsHTML += `<div class="stat-card">${cat.icon} <span class="count">${count}</span> ${cat.label.split(' ').slice(1).join(' ')}</div>`;
+
+                if (count === 0) {
+                    rows.push({ type: cat.label, value: '—', isHeader: false });
+                } else {
+                    values.forEach(v => {
+                        rows.push({ type: cat.label, value: v, isHeader: false });
+                    });
+                }
+            });
+
+            // نمایش آمار
+            stats.innerHTML = statsHTML;
+
+            // نمایش جدول
+            resultBody.innerHTML = '';
+            rows.forEach(row => {
+                const tr = document.createElement('tr');
+                const td1 = document.createElement('td');
+                td1.className = 'type-cell';
+                td1.textContent = row.type;
+                const td2 = document.createElement('td');
+                td2.className = 'value-cell';
+                td2.textContent = row.value;
+                tr.appendChild(td1);
+                tr.appendChild(td2);
+                resultBody.appendChild(tr);
+            });
+
+            results.classList.add('active');
+        }
+
+        function showError(msg) {
+            errorDiv.textContent = '❌ ' + msg;
+            errorDiv.classList.add('active');
+        }
+
+        // اضافه کردن https:// اگر کاربر فراموش کرد
+        urlInput.addEventListener('blur', function() {
+            let val = this.value.trim();
+            if (val && !val.startsWith('http://') && !val.startsWith('https://')) {
+                this.value = 'https://' + val;
+            }
+        });
+    </script>
+</body>
+</html>
+"""
+
+# ============================================================
+# 🌐 سرور وب (FastAPI) با CORS و رابط کاربری
 # ============================================================
 
 app = FastAPI(title="Minouta Scraper API", version="1.0")
@@ -447,6 +908,10 @@ class ScrapeRequest(BaseModel):
     extract_instagram: bool = False
     extract_youtube: bool = False
     save_history: bool = True
+
+@app.get("/", response_class=HTMLResponse)
+def root():
+    return HTML_PAGE
 
 @app.post("/scrape")
 def scrape_api(request: ScrapeRequest):
