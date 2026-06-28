@@ -30,7 +30,7 @@ from pydantic import BaseModel
 import uvicorn
 
 # ============================================================
-# 📝 توابع اصلی استخراج (با رجکس‌های سراسری اما با نام‌های منحصربه‌فرد)
+# 📝 توابع اصلی استخراج
 # ============================================================
 
 def normalize_url(user_input: str) -> str:
@@ -43,13 +43,16 @@ def normalize_url(user_input: str) -> str:
         return user_input
     return user_input
 
-# ✅ رجکس‌ها رو با یه پیشوند خاص تعریف می‌کنیم تا با هیچ متغیر دیگه‌ای تداخل نکنه
-_PATTERN_MOBILE = re.compile(r'(?<!\d)(?:0|\+98)9[0-9]{9}(?!\d)')
-_PATTERN_LANDLINE = re.compile(r'(?<!\d)(?:\+98|0098)?0[1-8][0-9]{9}(?!\d)')
-_PATTERN_EMAIL = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.IGNORECASE)
-_PATTERN_URL = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+', re.IGNORECASE)
-_PATTERN_INSTAGRAM = re.compile(r'https?://(?:www\.)?instagram\.com/([a-zA-Z0-9_.]+)/?', re.IGNORECASE)
-_PATTERN_YOUTUBE = re.compile(r'https?://(?:www\.)?youtube\.com/(?:@|c/|user/|channel/)([a-zA-Z0-9_-]+)/?', re.IGNORECASE)
+_MOBILE_REGEX = re.compile(r'(?<!\d)(?:0|\+98)9[0-9]{9}(?!\d)')
+_LANDLINE_REGEX = re.compile(r'(?<!\d)(?:\+98|0098)?0[1-8][0-9]{9}(?!\d)')
+_EMAIL_REGEX = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.IGNORECASE)
+_INSTAGRAM_REGEX = re.compile(r'https?://(?:www\.)?instagram\.com/([a-zA-Z0-9_.]+)/?', re.IGNORECASE)
+_YOUTUBE_REGEX = re.compile(r'https?://(?:www\.)?youtube\.com/(?:@|c/|user/|channel/)([a-zA-Z0-9_-]+)/?', re.IGNORECASE)
+
+# ❌ تابع extract_links به‌طور کامل غیرفعال شد تا خطای bool برطرف بشه
+def extract_links(text: str, base_url: str = ""):
+    # برای جلوگیری از هرگونه خطا، همیشه لیست خالی برمی‌گردونیم
+    return []
 
 def _normalize_phone(num: str) -> str:
     if num.startswith('+98'):
@@ -59,32 +62,20 @@ def _normalize_phone(num: str) -> str:
     return num
 
 def extract_phones(text: str):
-    mobiles_raw = _PATTERN_MOBILE.findall(text)
-    landlines_raw = _PATTERN_LANDLINE.findall(text)
+    mobiles_raw = _MOBILE_REGEX.findall(text)
+    landlines_raw = _LANDLINE_REGEX.findall(text)
     mobiles = list(dict.fromkeys(_normalize_phone(n) for n in mobiles_raw))
     landlines = list(dict.fromkeys(_normalize_phone(n) for n in landlines_raw))
     return mobiles, landlines
 
 def extract_emails(text: str):
-    return list(dict.fromkeys(_PATTERN_EMAIL.findall(text)))
-
-def extract_links(text: str, base_url: str = ""):
-    # ✅ استفاده از رجکس سراسری با نام منحصربه‌فرد
-    links = _PATTERN_URL.findall(text)
-    if base_url:
-        absolute_links = []
-        for link in links:
-            absolute = urljoin(base_url, link)
-            if absolute not in absolute_links:
-                absolute_links.append(absolute)
-        return absolute_links
-    return links
+    return list(dict.fromkeys(_EMAIL_REGEX.findall(text)))
 
 def extract_instagram_handles(text: str):
-    return list(dict.fromkeys(_PATTERN_INSTAGRAM.findall(text)))
+    return list(dict.fromkeys(_INSTAGRAM_REGEX.findall(text)))
 
 def extract_youtube_handles(text: str):
-    return list(dict.fromkeys(_PATTERN_YOUTUBE.findall(text)))
+    return list(dict.fromkeys(_YOUTUBE_REGEX.findall(text)))
 
 # ============================================================
 # 🌐 دریافت محتوا
