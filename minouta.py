@@ -43,12 +43,14 @@ def normalize_url(user_input: str) -> str:
         return user_input
     return user_input
 
-_MOBILE_RE = re.compile(r'(?<!\d)(?:0|\+98)9[0-9]{9}(?!\d)')
-_LANDLINE_RE = re.compile(r'(?<!\d)(?:\+98|0098)?0[1-8][0-9]{9}(?!\d)')
-_EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.IGNORECASE)
-_URL_RE = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+', re.IGNORECASE)
-_INSTAGRAM_LINK_RE = re.compile(r'https?://(?:www\.)?instagram\.com/([a-zA-Z0-9_.]+)/?', re.IGNORECASE)
-_YOUTUBE_LINK_RE = re.compile(r'https?://(?:www\.)?youtube\.com/(?:@|c/|user/|channel/)([a-zA-Z0-9_-]+)/?', re.IGNORECASE)
+# 🔥 تعریف رجکس‌ها با نام‌های واضح و منحصربه‌فرد
+# برای جلوگیری از تداخل با متغیرهای دیگر، از پسوند _REGEX استفاده می‌کنیم
+MOBILE_REGEX = re.compile(r'(?<!\d)(?:0|\+98)9[0-9]{9}(?!\d)')
+LANDLINE_REGEX = re.compile(r'(?<!\d)(?:\+98|0098)?0[1-8][0-9]{9}(?!\d)')
+EMAIL_REGEX = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.IGNORECASE)
+URL_REGEX = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+', re.IGNORECASE)
+INSTAGRAM_REGEX = re.compile(r'https?://(?:www\.)?instagram\.com/([a-zA-Z0-9_.]+)/?', re.IGNORECASE)
+YOUTUBE_REGEX = re.compile(r'https?://(?:www\.)?youtube\.com/(?:@|c/|user/|channel/)([a-zA-Z0-9_-]+)/?', re.IGNORECASE)
 
 def _normalize_phone(num: str) -> str:
     if num.startswith('+98'):
@@ -58,31 +60,42 @@ def _normalize_phone(num: str) -> str:
     return num
 
 def extract_phones(text: str):
-    mobiles_raw = _MOBILE_RE.findall(text)
-    landlines_raw = _LANDLINE_RE.findall(text)
+    mobiles_raw = MOBILE_REGEX.findall(text)
+    landlines_raw = LANDLINE_REGEX.findall(text)
     mobiles = list(dict.fromkeys(_normalize_phone(n) for n in mobiles_raw))
     landlines = list(dict.fromkeys(_normalize_phone(n) for n in landlines_raw))
     return mobiles, landlines
 
 def extract_emails(text: str):
-    return list(dict.fromkeys(_EMAIL_RE.findall(text)))
+    return list(dict.fromkeys(EMAIL_REGEX.findall(text)))
 
 def extract_links(text: str, base_url: str = ""):
-    links = _URL_RE.findall(text)
-    if base_url:
-        absolute_links = []
-        for link in links:
-            absolute = urljoin(base_url, link)
-            if absolute not in absolute_links:
-                absolute_links.append(absolute)
-        return absolute_links
-    return links
+    # با try/except خطاهای احتمالی را می‌گیریم تا به جای خطای ناشناخته، پیام واضح بدهیم
+    try:
+        links = URL_REGEX.findall(text)
+        if base_url:
+            absolute_links = []
+            for link in links:
+                absolute = urljoin(base_url, link)
+                if absolute not in absolute_links:
+                    absolute_links.append(absolute)
+            return absolute_links
+        return links
+    except Exception as e:
+        # اگر خطایی رخ داد، آن را با توضیح بیشتر دوباره پرتاب می‌کنیم
+        raise RuntimeError(f"Error in extract_links: {e} (URL_REGEX type: {type(URL_REGEX)})")
 
 def extract_instagram_handles(text: str):
-    return list(dict.fromkeys(_INSTAGRAM_LINK_RE.findall(text)))
+    try:
+        return list(dict.fromkeys(INSTAGRAM_REGEX.findall(text)))
+    except Exception as e:
+        raise RuntimeError(f"Error in extract_instagram_handles: {e} (INSTAGRAM_REGEX type: {type(INSTAGRAM_REGEX)})")
 
 def extract_youtube_handles(text: str):
-    return list(dict.fromkeys(_YOUTUBE_LINK_RE.findall(text)))
+    try:
+        return list(dict.fromkeys(YOUTUBE_REGEX.findall(text)))
+    except Exception as e:
+        raise RuntimeError(f"Error in extract_youtube_handles: {e} (YOUTUBE_REGEX type: {type(YOUTUBE_REGEX)})")
 
 # ============================================================
 # 🌐 دریافت محتوا
@@ -166,13 +179,10 @@ class ScraperEngine:
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# استفاده از متغیر محیطی DATABASE_URL (برای PostgreSQL در Render)
-# در غیر این صورت از SQLite استفاده کن
 DATABASE_URL_ENV = os.getenv("DATABASE_URL", None)
 if DATABASE_URL_ENV:
     SQLALCHEMY_DATABASE_URL = DATABASE_URL_ENV
 else:
-    # استفاده از پوشه‌ی موقت برای ذخیره‌ی دیتابیس در محیط ابری
     import tempfile
     db_dir = tempfile.gettempdir()
     db_path = os.path.join(db_dir, "scraper.db")
@@ -435,10 +445,9 @@ class RichCLI:
 
 app = FastAPI(title="Minouta Scraper API", version="1.0")
 
-# افزودن CORS برای دسترسی از مرورگر و سایر دامنه‌ها
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # در تولید بهتر است دامنه‌های خاص را تعیین کنید
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -480,12 +489,11 @@ def scrape_api(request: ScrapeRequest):
             )
             if request.save_history:
                 db_manager.save_result(result)
-            
-            # ✅ تبدیل datetime به رشته برای JSON serialization
+
             result_dict = asdict(result)
             result_dict['timestamp'] = result_dict['timestamp'].isoformat()
             results.append(result_dict)
-            
+
         except Exception as e:
             results.append({"url": url, "error": str(e)})
     return JSONResponse(content={"results": results})
@@ -551,7 +559,6 @@ def main():
             engine = ScraperEngine()
             for url in urls:
                 try:
-                    # همه‌ی گزینه‌ها فعال
                     result = engine.scrape(
                         url,
                         extract_mobile=True,
@@ -575,7 +582,6 @@ def main():
             print("Unknown mode. Available: cli, api, simple")
             return
 
-    # اگر هیچ آرگومانی داده نشد، پیش‌فرض cli است
     cli = RichCLI()
     cli.run()
 
