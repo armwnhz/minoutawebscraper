@@ -43,14 +43,13 @@ def normalize_url(user_input: str) -> str:
         return user_input
     return user_input
 
-# 🔥 تعریف رجکس‌ها با نام‌های واضح و منحصربه‌فرد
-# برای جلوگیری از تداخل با متغیرهای دیگر، از پسوند _REGEX استفاده می‌کنیم
+# تعریف رجکس‌ها برای شماره و ایمیل (اینها تداخل ندارن)
 MOBILE_REGEX = re.compile(r'(?<!\d)(?:0|\+98)9[0-9]{9}(?!\d)')
 LANDLINE_REGEX = re.compile(r'(?<!\d)(?:\+98|0098)?0[1-8][0-9]{9}(?!\d)')
 EMAIL_REGEX = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.IGNORECASE)
-URL_REGEX = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+', re.IGNORECASE)
-INSTAGRAM_REGEX = re.compile(r'https?://(?:www\.)?instagram\.com/([a-zA-Z0-9_.]+)/?', re.IGNORECASE)
-YOUTUBE_REGEX = re.compile(r'https?://(?:www\.)?youtube\.com/(?:@|c/|user/|channel/)([a-zA-Z0-9_-]+)/?', re.IGNORECASE)
+
+# رجکس‌های لینک و شبکه‌های اجتماعی رو داخل خود توابع تعریف میکنیم
+# تا از تداخل با متغیرهای دیگه جلوگیری بشه
 
 def _normalize_phone(num: str) -> str:
     if num.startswith('+98'):
@@ -69,33 +68,28 @@ def extract_phones(text: str):
 def extract_emails(text: str):
     return list(dict.fromkeys(EMAIL_REGEX.findall(text)))
 
+# ✅ اصلاح شده: رجکس لینک داخل تابع تعریف شده
 def extract_links(text: str, base_url: str = ""):
-    # با try/except خطاهای احتمالی را می‌گیریم تا به جای خطای ناشناخته، پیام واضح بدهیم
-    try:
-        links = URL_REGEX.findall(text)
-        if base_url:
-            absolute_links = []
-            for link in links:
-                absolute = urljoin(base_url, link)
-                if absolute not in absolute_links:
-                    absolute_links.append(absolute)
-            return absolute_links
-        return links
-    except Exception as e:
-        # اگر خطایی رخ داد، آن را با توضیح بیشتر دوباره پرتاب می‌کنیم
-        raise RuntimeError(f"Error in extract_links: {e} (URL_REGEX type: {type(URL_REGEX)})")
+    url_pattern = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+', re.IGNORECASE)
+    links = url_pattern.findall(text)
+    if base_url:
+        absolute_links = []
+        for link in links:
+            absolute = urljoin(base_url, link)
+            if absolute not in absolute_links:
+                absolute_links.append(absolute)
+        return absolute_links
+    return links
 
+# ✅ اصلاح شده: رجکس اینستاگرام داخل تابع تعریف شده
 def extract_instagram_handles(text: str):
-    try:
-        return list(dict.fromkeys(INSTAGRAM_REGEX.findall(text)))
-    except Exception as e:
-        raise RuntimeError(f"Error in extract_instagram_handles: {e} (INSTAGRAM_REGEX type: {type(INSTAGRAM_REGEX)})")
+    instagram_pattern = re.compile(r'https?://(?:www\.)?instagram\.com/([a-zA-Z0-9_.]+)/?', re.IGNORECASE)
+    return list(dict.fromkeys(instagram_pattern.findall(text)))
 
+# ✅ اصلاح شده: رجکس یوتیوب داخل تابع تعریف شده
 def extract_youtube_handles(text: str):
-    try:
-        return list(dict.fromkeys(YOUTUBE_REGEX.findall(text)))
-    except Exception as e:
-        raise RuntimeError(f"Error in extract_youtube_handles: {e} (YOUTUBE_REGEX type: {type(YOUTUBE_REGEX)})")
+    youtube_pattern = re.compile(r'https?://(?:www\.)?youtube\.com/(?:@|c/|user/|channel/)([a-zA-Z0-9_-]+)/?', re.IGNORECASE)
+    return list(dict.fromkeys(youtube_pattern.findall(text)))
 
 # ============================================================
 # 🌐 دریافت محتوا
