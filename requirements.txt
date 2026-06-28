@@ -5,3 +5,4 @@ requests==2.28.2
 sqlalchemy==1.4.46
 pydantic==1.10.9
 rich==13.3.5
+psycopg2-binary
