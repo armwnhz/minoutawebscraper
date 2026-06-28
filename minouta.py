@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ============================================================
-# 🕷️ Minouta Web Scraper - Core + CLI + API + Full Web UI
+# 🕷️ Minouta Web Scraper - Core + Auth + Web UI
 # ============================================================
 
 import sys
@@ -11,7 +11,7 @@ import os
 from urllib.parse import urljoin
 from typing import List, Dict, Optional
 from dataclasses import dataclass, asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
 from rich.console import Console
@@ -21,13 +21,72 @@ from rich.prompt import Prompt, Confirm, IntPrompt
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 from rich import box
 
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, JSON, Text
-from sqlalchemy.orm import declarative_base, sessionmaker, Session
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse, HTMLResponse
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, JSON, Text, ForeignKey
+from sqlalchemy.orm import declarative_base, sessionmaker, Session, relationship
+from fastapi import FastAPI, HTTPException, Depends, status, Request, Response
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from pydantic import BaseModel, EmailStr
 import uvicorn
+
+# ============================================================
+# 🔐 امنیت و احراز هویت
+# ============================================================
+
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+from datetime import timezone
+
+# تنظیمات JWT
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-this-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 ساعت
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict, expires_delta: timedelta = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def get_current_user(request: Request):
+    """دریافت کاربر فعلی از توکن موجود در کوکی"""
+    token = request.cookies.get("access_token")
+    if not token:
+        return None
+    
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        if user_id is None:
+            return None
+    except JWTError:
+        return None
+    
+    db = SessionLocal()
+    user = db.query(User).filter(User.id == int(user_id)).first()
+    db.close()
+    return user
+
+async def get_current_user_required(request: Request):
+    """دریافت کاربر فعلی، در صورت عدم وجود خطا 401 برمی‌گرداند"""
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    return user
 
 # ============================================================
 # 📝 توابع اصلی استخراج
@@ -50,7 +109,7 @@ _INSTAGRAM_REGEX = re.compile(r'https?://(?:www\.)?instagram\.com/([a-zA-Z0-9_.]
 _YOUTUBE_REGEX = re.compile(r'https?://(?:www\.)?youtube\.com/(?:@|c/|user/|channel/)([a-zA-Z0-9_-]+)/?', re.IGNORECASE)
 
 def extract_links(text: str, base_url: str = ""):
-    return []  # غیرفعال شده به دلیل خطای bool
+    return []  # غیرفعال شده
 
 def _normalize_phone(num: str) -> str:
     if num.startswith('+98'):
@@ -152,7 +211,7 @@ class ScraperEngine:
         return results
 
 # ============================================================
-# 🗄️ پایگاه داده (SQLite با پشتیبانی از متغیر محیطی)
+# 🗄️ پایگاه داده با پشتیبانی از کاربران
 # ============================================================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -170,10 +229,23 @@ engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+class User(Base):
+    __tablename__ = "users"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    email = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+    
+    # ارتباط با تاریخچه اسکرپ‌ها
+    histories = relationship("ScrapeHistory", back_populates="user", cascade="all, delete-orphan")
+
 class ScrapeHistory(Base):
     __tablename__ = "scrape_history"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     url = Column(String, index=True)
     timestamp = Column(DateTime, default=datetime.now)
     mobiles = Column(JSON, default=list)
@@ -183,6 +255,9 @@ class ScrapeHistory(Base):
     instagram = Column(JSON, default=list)
     youtube = Column(JSON, default=list)
     raw_data = Column(Text, nullable=True)
+    
+    # ارتباط با کاربر
+    user = relationship("User", back_populates="histories")
 
 Base.metadata.create_all(bind=engine)
 
@@ -190,8 +265,9 @@ class DatabaseManager:
     def __init__(self, session: Session = None):
         self.session = session or SessionLocal()
 
-    def save_result(self, result: ScrapeResult, raw_html: str = None):
+    def save_result(self, user_id: int, result: ScrapeResult, raw_html: str = None):
         history = ScrapeHistory(
+            user_id=user_id,
             url=result.url,
             timestamp=result.timestamp,
             mobiles=result.mobiles,
@@ -206,11 +282,11 @@ class DatabaseManager:
         self.session.commit()
         return history.id
 
-    def get_all(self, limit: int = 100):
-        return self.session.query(ScrapeHistory).order_by(ScrapeHistory.timestamp.desc()).limit(limit).all()
+    def get_user_history(self, user_id: int, limit: int = 100):
+        return self.session.query(ScrapeHistory).filter(ScrapeHistory.user_id == user_id).order_by(ScrapeHistory.timestamp.desc()).limit(limit).all()
 
-    def get_by_id(self, id: int):
-        return self.session.query(ScrapeHistory).filter(ScrapeHistory.id == id).first()
+    def get_history_by_id(self, history_id: int, user_id: int):
+        return self.session.query(ScrapeHistory).filter(ScrapeHistory.id == history_id, ScrapeHistory.user_id == user_id).first()
 
     def close(self):
         self.session.close()
@@ -295,8 +371,8 @@ class RichCLI:
         ) as progress:
             task = progress.add_task("Scraping...", total=None)
             try:
+                # در حالت CLI، کاربری وجود ندارد، پس بدون ذخیره در دیتابیس
                 result = self.engine.scrape(url, **options)
-                self.db.save_result(result)
                 self._display_result(result)
             except Exception as e:
                 console.print(f"[red]Error: {e}[/]")
@@ -318,7 +394,6 @@ class RichCLI:
             for url in urls:
                 try:
                     result = self.engine.scrape(url, **options)
-                    self.db.save_result(result)
                     results.append(result)
                 except Exception as e:
                     console.print(f"[red]Error on {url}: {e}[/]")
@@ -343,25 +418,7 @@ class RichCLI:
         console.print(table)
 
     def _show_history(self):
-        records = self.db.get_all(limit=20)
-        if not records:
-            console.print("[yellow]No history found.[/]")
-            return
-        table = Table(title="Scrape History", box=box.SIMPLE)
-        table.add_column("ID", style="dim")
-        table.add_column("URL", style="cyan")
-        table.add_column("Time", style="green")
-        table.add_column("Mobiles", justify="right")
-        table.add_column("Emails", justify="right")
-        for rec in records:
-            table.add_row(
-                str(rec.id),
-                rec.url[:40] + ("..." if len(rec.url) > 40 else ""),
-                rec.timestamp.strftime("%Y-%m-%d %H:%M"),
-                str(len(rec.mobiles or [])),
-                str(len(rec.emails or []))
-            )
-        console.print(table)
+        console.print("[yellow]CLI mode does not support user-specific history. Please use Web UI.[/]")
 
     def _settings(self):
         console.print("[bold]Current Settings:[/]")
@@ -377,51 +434,329 @@ class RichCLI:
             console.print("[green]Settings updated.[/]")
 
     def _export_data(self):
-        records = self.db.get_all(limit=1000)
-        if not records:
-            console.print("[yellow]No data to export.[/]")
-            return
-        format = Prompt.ask("Export format", choices=["csv", "json", "txt"], default="csv")
-        path = Prompt.ask("File path", default=f"export.{format}")
-        data = []
-        for rec in records:
-            data.append({
-                "id": rec.id,
-                "url": rec.url,
-                "timestamp": rec.timestamp.isoformat(),
-                "mobiles": rec.mobiles,
-                "landlines": rec.landlines,
-                "emails": rec.emails,
-                "links": rec.links,
-                "instagram": rec.instagram,
-                "youtube": rec.youtube
-            })
-        try:
-            if format == "csv":
-                with open(path, 'w', newline='', encoding='utf-8') as f:
-                    writer = csv.DictWriter(f, fieldnames=data[0].keys())
-                    writer.writeheader()
-                    writer.writerows(data)
-            elif format == "json":
-                with open(path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
-            else:  # txt
-                with open(path, 'w', encoding='utf-8') as f:
-                    for item in data:
-                        f.write(f"ID: {item['id']}\nURL: {item['url']}\nTime: {item['timestamp']}\n")
-                        for key in ['mobiles', 'landlines', 'emails', 'links', 'instagram', 'youtube']:
-                            if item[key]:
-                                f.write(f"{key}: {', '.join(item[key])}\n")
-                        f.write("\n")
-            console.print(f"[green]Exported to {path}[/]")
-        except Exception as e:
-            console.print(f"[red]Export error: {e}[/]")
+        console.print("[yellow]CLI mode does not support export. Please use Web UI.[/]")
 
 # ============================================================
-# 🌐 صفحه وب - رابط کاربری گرافیکی پیشرفته
+# 🌐 صفحات HTML برای احراز هویت و رابط کاربری
 # ============================================================
 
-HTML_PAGE = """
+# صفحه ورود
+LOGIN_PAGE = """
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ورود | Minouta Scraper</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+            color: #e8e8e8;
+        }
+        .container {
+            max-width: 420px;
+            width: 100%;
+            background: rgba(255,255,255,0.05);
+            backdrop-filter: blur(20px);
+            border-radius: 24px;
+            padding: 40px;
+            border: 1px solid rgba(79, 172, 254, 0.15);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+        }
+        .header { text-align: center; margin-bottom: 30px; }
+        .header h1 { font-size: 2rem; background: linear-gradient(135deg, #4facfe, #00f2fe); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .header p { color: #a0b4c8; margin-top: 4px; }
+        .form-group { margin-bottom: 18px; }
+        label { display: block; font-weight: 600; margin-bottom: 6px; color: #b0c4de; font-size: 0.9rem; }
+        input[type="text"], input[type="email"], input[type="password"] {
+            width: 100%;
+            padding: 12px 16px;
+            background: rgba(255,255,255,0.07);
+            border: 2px solid #2a3f5f;
+            border-radius: 12px;
+            color: #f0f0f0;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            outline: none;
+        }
+        input:focus {
+            border-color: #4facfe;
+            background: rgba(255,255,255,0.12);
+            box-shadow: 0 0 20px rgba(79, 172, 254, 0.15);
+        }
+        .btn {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #4facfe, #00f2fe);
+            border: none;
+            border-radius: 12px;
+            color: #1a1a2e;
+            font-size: 1.1rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(79, 172, 254, 0.3); }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+        .error { background: rgba(255,70,70,0.15); border: 1px solid rgba(255,70,70,0.3); padding: 12px; border-radius: 10px; color: #ff6b6b; margin-bottom: 15px; display: none; }
+        .error.active { display: block; }
+        .footer { text-align: center; margin-top: 20px; color: #6a8aaa; font-size: 0.9rem; }
+        .footer a { color: #4facfe; text-decoration: none; font-weight: 600; }
+        .footer a:hover { text-decoration: underline; }
+        .loading { display: none; text-align: center; padding: 10px; color: #4facfe; }
+        .loading.active { display: block; }
+        .spinner { display: inline-block; width: 30px; height: 30px; border: 3px solid rgba(79,172,254,0.15); border-top-color: #4facfe; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 8px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🕷️ ورود</h1>
+            <p>به Minouta Web Scraper خوش آمدید</p>
+        </div>
+        <div id="error" class="error"></div>
+        <form id="loginForm">
+            <div class="form-group">
+                <label>👤 نام کاربری</label>
+                <input type="text" id="username" placeholder="نام کاربری خود را وارد کنید" required>
+            </div>
+            <div class="form-group">
+                <label>🔒 رمز عبور</label>
+                <input type="password" id="password" placeholder="رمز عبور خود را وارد کنید" required>
+            </div>
+            <button type="submit" class="btn" id="submitBtn">🚀 ورود</button>
+            <div class="loading" id="loading"><div class="spinner"></div><div>در حال ورود...</div></div>
+        </form>
+        <div class="footer">
+            حساب کاربری ندارید؟ <a href="/register">ثبت نام کنید</a>
+        </div>
+    </div>
+    <script>
+        const form = document.getElementById('loginForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const loading = document.getElementById('loading');
+        const errorDiv = document.getElementById('error');
+        const API_BASE = window.location.origin;
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value.trim();
+
+            if (!username || !password) {
+                showError('لطفاً تمام فیلدها را پر کنید.');
+                return;
+            }
+
+            submitBtn.disabled = true;
+            loading.classList.add('active');
+            errorDiv.classList.remove('active');
+
+            try {
+                const response = await fetch(`${API_BASE}/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    showError(data.detail || 'خطا در ورود');
+                    return;
+                }
+
+                window.location.href = '/app';
+
+            } catch (err) {
+                showError('خطا در ارتباط با سرور');
+            } finally {
+                submitBtn.disabled = false;
+                loading.classList.remove('active');
+            }
+        });
+
+        function showError(msg) {
+            errorDiv.textContent = '❌ ' + msg;
+            errorDiv.classList.add('active');
+        }
+    </script>
+</body>
+</html>
+"""
+
+# صفحه ثبت نام
+REGISTER_PAGE = """
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ثبت نام | Minouta Scraper</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+            color: #e8e8e8;
+        }
+        .container {
+            max-width: 420px;
+            width: 100%;
+            background: rgba(255,255,255,0.05);
+            backdrop-filter: blur(20px);
+            border-radius: 24px;
+            padding: 40px;
+            border: 1px solid rgba(79, 172, 254, 0.15);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+        }
+        .header { text-align: center; margin-bottom: 30px; }
+        .header h1 { font-size: 2rem; background: linear-gradient(135deg, #4facfe, #00f2fe); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .header p { color: #a0b4c8; margin-top: 4px; }
+        .form-group { margin-bottom: 18px; }
+        label { display: block; font-weight: 600; margin-bottom: 6px; color: #b0c4de; font-size: 0.9rem; }
+        input[type="text"], input[type="email"], input[type="password"] {
+            width: 100%;
+            padding: 12px 16px;
+            background: rgba(255,255,255,0.07);
+            border: 2px solid #2a3f5f;
+            border-radius: 12px;
+            color: #f0f0f0;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            outline: none;
+        }
+        input:focus {
+            border-color: #4facfe;
+            background: rgba(255,255,255,0.12);
+            box-shadow: 0 0 20px rgba(79, 172, 254, 0.15);
+        }
+        .btn {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #4facfe, #00f2fe);
+            border: none;
+            border-radius: 12px;
+            color: #1a1a2e;
+            font-size: 1.1rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(79, 172, 254, 0.3); }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+        .error { background: rgba(255,70,70,0.15); border: 1px solid rgba(255,70,70,0.3); padding: 12px; border-radius: 10px; color: #ff6b6b; margin-bottom: 15px; display: none; }
+        .error.active { display: block; }
+        .footer { text-align: center; margin-top: 20px; color: #6a8aaa; font-size: 0.9rem; }
+        .footer a { color: #4facfe; text-decoration: none; font-weight: 600; }
+        .footer a:hover { text-decoration: underline; }
+        .loading { display: none; text-align: center; padding: 10px; color: #4facfe; }
+        .loading.active { display: block; }
+        .spinner { display: inline-block; width: 30px; height: 30px; border: 3px solid rgba(79,172,254,0.15); border-top-color: #4facfe; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 8px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🕷️ ثبت نام</h1>
+            <p>ایجاد حساب کاربری جدید</p>
+        </div>
+        <div id="error" class="error"></div>
+        <form id="registerForm">
+            <div class="form-group">
+                <label>👤 نام کاربری</label>
+                <input type="text" id="username" placeholder="نام کاربری خود را انتخاب کنید" required>
+            </div>
+            <div class="form-group">
+                <label>📧 ایمیل</label>
+                <input type="email" id="email" placeholder="ایمیل خود را وارد کنید" required>
+            </div>
+            <div class="form-group">
+                <label>🔒 رمز عبور</label>
+                <input type="password" id="password" placeholder="رمز عبور (حداقل ۶ کاراکتر)" required minlength="6">
+            </div>
+            <button type="submit" class="btn" id="submitBtn">🚀 ثبت نام</button>
+            <div class="loading" id="loading"><div class="spinner"></div><div>در حال ثبت نام...</div></div>
+        </form>
+        <div class="footer">
+            قبلاً ثبت نام کرده‌اید؟ <a href="/login">وارد شوید</a>
+        </div>
+    </div>
+    <script>
+        const form = document.getElementById('registerForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const loading = document.getElementById('loading');
+        const errorDiv = document.getElementById('error');
+        const API_BASE = window.location.origin;
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = document.getElementById('username').value.trim();
+            const email = document.getElementById('email').value.trim();
+            const password = document.getElementById('password').value.trim();
+
+            if (!username || !email || !password) {
+                showError('لطفاً تمام فیلدها را پر کنید.');
+                return;
+            }
+            if (password.length < 6) {
+                showError('رمز عبور باید حداقل ۶ کاراکتر باشد.');
+                return;
+            }
+
+            submitBtn.disabled = true;
+            loading.classList.add('active');
+            errorDiv.classList.remove('active');
+
+            try {
+                const response = await fetch(`${API_BASE}/auth/register`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, email, password })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    showError(data.detail || 'خطا در ثبت نام');
+                    return;
+                }
+
+                window.location.href = '/login';
+
+            } catch (err) {
+                showError('خطا در ارتباط با سرور');
+            } finally {
+                submitBtn.disabled = false;
+                loading.classList.remove('active');
+            }
+        });
+
+        function showError(msg) {
+            errorDiv.textContent = '❌ ' + msg;
+            errorDiv.classList.add('active');
+        }
+    </script>
+</body>
+</html>
+"""
+
+# صفحه اصلی برنامه (بعد از ورود)
+APP_PAGE = """
 <!DOCTYPE html>
 <html lang="fa" dir="rtl">
 <head>
@@ -429,11 +764,7 @@ HTML_PAGE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>🕷️ Minouta Web Scraper</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%);
@@ -441,31 +772,59 @@ HTML_PAGE = """
             padding: 20px;
             color: #e8e8e8;
         }
-        .container {
-            max-width: 1100px;
-            margin: 0 auto;
-        }
+        .container { max-width: 1100px; margin: 0 auto; }
         .header {
-            text-align: center;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
             margin-bottom: 30px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid rgba(79,172,254,0.15);
         }
         .header h1 {
-            font-size: 2.8rem;
+            font-size: 2.2rem;
             background: linear-gradient(135deg, #4facfe, #00f2fe);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             background-clip: text;
         }
-        .header p {
-            color: #a0b4c8;
-            margin-top: 8px;
-            font-size: 1.1rem;
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+        .user-info .username {
+            color: #b0c4de;
+            font-weight: 600;
+        }
+        .btn-outline {
+            padding: 8px 20px;
+            background: rgba(255,255,255,0.05);
+            border: 2px solid #2a3f5f;
+            border-radius: 10px;
+            color: #b0c4de;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-family: inherit;
+            font-size: 0.9rem;
+        }
+        .btn-outline:hover {
+            background: rgba(255,255,255,0.1);
+            border-color: #4facfe;
+        }
+        .btn-outline.danger:hover {
+            border-color: #ff6b6b;
+            color: #ff6b6b;
         }
         .tabs {
             display: flex;
             gap: 12px;
             justify-content: center;
             margin-bottom: 25px;
+            flex-wrap: wrap;
         }
         .tab-btn {
             padding: 12px 30px;
@@ -479,14 +838,12 @@ HTML_PAGE = """
             transition: all 0.3s ease;
             font-family: inherit;
         }
-        .tab-btn:hover {
-            background: rgba(255,255,255,0.1);
-        }
+        .tab-btn:hover { background: rgba(255,255,255,0.1); }
         .tab-btn.active {
-            background: rgba(79, 172, 254, 0.2);
+            background: rgba(79,172,254,0.2);
             border-color: #4facfe;
             color: #fff;
-            box-shadow: 0 0 20px rgba(79, 172, 254, 0.15);
+            box-shadow: 0 0 20px rgba(79,172,254,0.15);
         }
         .tab-content {
             display: none;
@@ -494,22 +851,12 @@ HTML_PAGE = """
             backdrop-filter: blur(20px);
             border-radius: 24px;
             padding: 30px;
-            border: 1px solid rgba(79, 172, 254, 0.15);
+            border: 1px solid rgba(79,172,254,0.15);
             box-shadow: 0 20px 60px rgba(0,0,0,0.5);
         }
-        .tab-content.active {
-            display: block;
-        }
-        .form-group {
-            margin-bottom: 20px;
-        }
-        label {
-            display: block;
-            font-weight: 600;
-            margin-bottom: 6px;
-            color: #b0c4de;
-            font-size: 0.95rem;
-        }
+        .tab-content.active { display: block; }
+        .form-group { margin-bottom: 20px; }
+        label { display: block; font-weight: 600; margin-bottom: 6px; color: #b0c4de; font-size: 0.95rem; }
         input[type="text"] {
             width: 100%;
             padding: 12px 16px;
@@ -524,7 +871,7 @@ HTML_PAGE = """
         input[type="text"]:focus {
             border-color: #4facfe;
             background: rgba(255,255,255,0.12);
-            box-shadow: 0 0 20px rgba(79, 172, 254, 0.15);
+            box-shadow: 0 0 20px rgba(79,172,254,0.15);
         }
         .checkbox-group {
             display: grid;
@@ -545,7 +892,7 @@ HTML_PAGE = """
         }
         .checkbox-item:hover {
             background: rgba(255,255,255,0.08);
-            border-color: rgba(79, 172, 254, 0.3);
+            border-color: rgba(79,172,254,0.3);
         }
         .checkbox-item input[type="checkbox"] {
             width: 18px;
@@ -564,9 +911,7 @@ HTML_PAGE = """
             opacity: 0.4;
             cursor: not-allowed;
         }
-        .checkbox-item.disabled input {
-            cursor: not-allowed;
-        }
+        .checkbox-item.disabled input { cursor: not-allowed; }
         .btn {
             width: 100%;
             padding: 14px;
@@ -579,14 +924,12 @@ HTML_PAGE = """
             cursor: pointer;
             transition: all 0.3s ease;
         }
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 30px rgba(79, 172, 254, 0.3);
-        }
-        .btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-            transform: none;
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(79,172,254,0.3); }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+        .btn-small {
+            width: auto;
+            padding: 8px 20px;
+            font-size: 0.9rem;
         }
         .loading {
             display: none;
@@ -595,29 +938,23 @@ HTML_PAGE = """
             font-size: 1.1rem;
             color: #4facfe;
         }
-        .loading.active {
-            display: block;
-        }
+        .loading.active { display: block; }
         .spinner {
             display: inline-block;
             width: 50px;
             height: 50px;
-            border: 4px solid rgba(79, 172, 254, 0.15);
+            border: 4px solid rgba(79,172,254,0.15);
             border-top-color: #4facfe;
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
             margin-bottom: 15px;
         }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
+        @keyframes spin { to { transform: rotate(360deg); } }
         .results-box {
             margin-top: 25px;
             display: none;
         }
-        .results-box.active {
-            display: block;
-        }
+        .results-box.active { display: block; }
         .results-table {
             width: 100%;
             border-collapse: collapse;
@@ -626,41 +963,31 @@ HTML_PAGE = """
             overflow: hidden;
         }
         .results-table th {
-            background: rgba(79, 172, 254, 0.15);
+            background: rgba(79,172,254,0.15);
             padding: 12px 16px;
             text-align: right;
             font-weight: 600;
             color: #b0c4de;
-            border-bottom: 2px solid rgba(79, 172, 254, 0.1);
+            border-bottom: 2px solid rgba(79,172,254,0.1);
         }
         .results-table td {
             padding: 10px 16px;
             border-bottom: 1px solid rgba(255,255,255,0.04);
             color: #e0e8f0;
         }
-        .results-table tr:hover td {
-            background: rgba(79, 172, 254, 0.05);
-        }
-        .results-table .type-cell {
-            color: #8ab4ff;
-            font-weight: 500;
-        }
-        .results-table .value-cell {
-            font-family: 'Consolas', monospace;
-            font-size: 0.9rem;
-        }
+        .results-table tr:hover td { background: rgba(79,172,254,0.05); }
+        .results-table .type-cell { color: #8ab4ff; font-weight: 500; }
+        .results-table .value-cell { font-family: 'Consolas', monospace; font-size: 0.9rem; }
         .error {
-            background: rgba(255, 70, 70, 0.15);
-            border: 1px solid rgba(255, 70, 70, 0.3);
+            background: rgba(255,70,70,0.15);
+            border: 1px solid rgba(255,70,70,0.3);
             padding: 16px;
             border-radius: 12px;
             color: #ff6b6b;
             margin: 10px 0;
             display: none;
         }
-        .error.active {
-            display: block;
-        }
+        .error.active { display: block; }
         .stats {
             display: flex;
             flex-wrap: wrap;
@@ -683,9 +1010,7 @@ HTML_PAGE = """
             color: #4facfe;
             font-size: 1.2rem;
         }
-        .history-list {
-            margin-top: 15px;
-        }
+        .history-list { margin-top: 15px; }
         .history-item {
             display: flex;
             justify-content: space-between;
@@ -700,22 +1025,17 @@ HTML_PAGE = """
         }
         .history-item:hover {
             background: rgba(255,255,255,0.08);
-            border-color: rgba(79, 172, 254, 0.2);
+            border-color: rgba(79,172,254,0.2);
         }
         .history-item .info {
             display: flex;
             gap: 20px;
             flex-wrap: wrap;
         }
-        .history-item .info span {
-            color: #a0b4c8;
-        }
-        .history-item .info .url {
-            color: #4facfe;
-            font-weight: 500;
-        }
+        .history-item .info span { color: #a0b4c8; }
+        .history-item .info .url { color: #4facfe; font-weight: 500; }
         .history-item .badge {
-            background: rgba(79, 172, 254, 0.15);
+            background: rgba(79,172,254,0.15);
             padding: 4px 12px;
             border-radius: 20px;
             font-size: 0.8rem;
@@ -725,8 +1045,20 @@ HTML_PAGE = """
             margin-top: 20px;
             display: none;
         }
-        .detail-view.active {
-            display: block;
+        .detail-view.active { display: block; }
+        .export-section {
+            margin-top: 15px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .export-section .btn-small {
+            background: rgba(79,172,254,0.15);
+            border: 1px solid rgba(79,172,254,0.2);
+            color: #8ab4ff;
+        }
+        .export-section .btn-small:hover {
+            background: rgba(79,172,254,0.25);
         }
         .footer {
             text-align: center;
@@ -741,6 +1073,7 @@ HTML_PAGE = """
             .tab-btn { padding: 10px 16px; font-size: 0.9rem; }
             .checkbox-group { grid-template-columns: repeat(2, 1fr); }
             .history-item { flex-direction: column; align-items: flex-start; gap: 8px; }
+            .header { flex-direction: column; align-items: flex-start; gap: 10px; }
         }
     </style>
 </head>
@@ -748,7 +1081,10 @@ HTML_PAGE = """
     <div class="container">
         <div class="header">
             <h1>🕷️ Minouta Web Scraper</h1>
-            <p>استخراج اطلاعات از وب‌سایت‌ها با یک کلیک</p>
+            <div class="user-info">
+                <span class="username" id="usernameDisplay">👤 کاربر</span>
+                <button class="btn-outline danger" id="logoutBtn">🚪 خروج</button>
+            </div>
         </div>
 
         <div class="tabs">
@@ -764,96 +1100,86 @@ HTML_PAGE = """
                     <label>🌐 آدرس وب‌سایت</label>
                     <input type="text" id="urlInput" placeholder="مثلاً: hamzehalizadeh.ir" required>
                 </div>
-
                 <div class="form-group">
                     <label>🔍 انتخاب داده‌ها برای استخراج</label>
                     <div class="checkbox-group">
-                        <div class="checkbox-item">
-                            <input type="checkbox" id="chkMobile" checked>
-                            <label for="chkMobile">📱 موبایل</label>
-                        </div>
-                        <div class="checkbox-item">
-                            <input type="checkbox" id="chkLandline" checked>
-                            <label for="chkLandline">🏠 ثابت</label>
-                        </div>
-                        <div class="checkbox-item">
-                            <input type="checkbox" id="chkEmail" checked>
-                            <label for="chkEmail">✉️ ایمیل</label>
-                        </div>
-                        <div class="checkbox-item">
-                            <input type="checkbox" id="chkInstagram" checked>
-                            <label for="chkInstagram">📸 اینستاگرام</label>
-                        </div>
-                        <div class="checkbox-item">
-                            <input type="checkbox" id="chkYoutube" checked>
-                            <label for="chkYoutube">▶️ یوتیوب</label>
-                        </div>
-                        <div class="checkbox-item disabled">
-                            <input type="checkbox" id="chkLinks" disabled>
-                            <label for="chkLinks">🔗 لینک (غیرفعال)</label>
-                        </div>
+                        <div class="checkbox-item"><input type="checkbox" id="chkMobile" checked><label for="chkMobile">📱 موبایل</label></div>
+                        <div class="checkbox-item"><input type="checkbox" id="chkLandline" checked><label for="chkLandline">🏠 ثابت</label></div>
+                        <div class="checkbox-item"><input type="checkbox" id="chkEmail" checked><label for="chkEmail">✉️ ایمیل</label></div>
+                        <div class="checkbox-item"><input type="checkbox" id="chkInstagram" checked><label for="chkInstagram">📸 اینستاگرام</label></div>
+                        <div class="checkbox-item"><input type="checkbox" id="chkYoutube" checked><label for="chkYoutube">▶️ یوتیوب</label></div>
+                        <div class="checkbox-item disabled"><input type="checkbox" id="chkLinks" disabled><label for="chkLinks">🔗 لینک (غیرفعال)</label></div>
                     </div>
                 </div>
-
                 <button type="submit" class="btn" id="submitBtn">🚀 شروع اسکرپ</button>
             </form>
-
-            <div class="loading" id="loading">
-                <div class="spinner"></div>
-                <div>در حال اسکرپ کردن... لطفاً صبر کنید</div>
-            </div>
-
+            <div class="loading" id="loading"><div class="spinner"></div><div>در حال اسکرپ کردن... لطفاً صبر کنید</div></div>
             <div class="results-box" id="resultsBox">
                 <div class="stats" id="stats"></div>
-                <table class="results-table" id="resultTable">
-                    <thead>
-                        <tr>
-                            <th>نوع</th>
-                            <th>مقدار</th>
-                        </tr>
-                    </thead>
-                    <tbody id="resultBody"></tbody>
-                </table>
+                <table class="results-table"><thead><tr><th>نوع</th><th>مقدار</th></tr></thead><tbody id="resultBody"></tbody></table>
             </div>
         </div>
 
         <!-- تب تاریخچه -->
         <div id="tab-history" class="tab-content">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
                 <h2 style="color: #b0c4de;">📋 اسکرپ‌های قبلی</h2>
-                <button class="btn" style="width: auto; padding: 8px 20px; font-size: 0.9rem;" id="refreshHistory">🔄 بارگذاری مجدد</button>
+                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                    <button class="btn-outline" id="refreshHistory">🔄 بارگذاری</button>
+                    <button class="btn-outline" id="exportHistoryCSV">📥 خروجی CSV</button>
+                    <button class="btn-outline" id="exportHistoryJSON">📥 خروجی JSON</button>
+                    <button class="btn-outline" id="exportHistoryTXT">📥 خروجی TXT</button>
+                </div>
             </div>
-            <div id="historyList" class="history-list">
-                <div style="text-align:center; color:#6a8aaa; padding: 20px;">در حال بارگذاری...</div>
-            </div>
+            <div id="historyList" class="history-list"><div style="text-align:center; color:#6a8aaa; padding:20px;">در حال بارگذاری...</div></div>
             <div class="detail-view" id="historyDetail">
                 <h3 style="color: #b0c4de; margin-bottom: 10px;">📄 جزئیات اسکرپ</h3>
                 <div id="historyDetailContent"></div>
             </div>
         </div>
 
-        <div class="footer">
-            ⚡ طراحی شده توسط arman hajizadeh
-        </div>
+        <div class="footer">⚡ طراحی شده توسط arman hajizadeh</div>
     </div>
 
     <script>
         const API_BASE = window.location.origin;
+        let currentUser = null;
+        let currentHistoryData = [];
 
-        // مدیریت تب‌ها
+        // ======== دریافت اطلاعات کاربر ========
+        async function loadUser() {
+            try {
+                const resp = await fetch(`${API_BASE}/auth/me`);
+                if (resp.ok) {
+                    const user = await resp.json();
+                    document.getElementById('usernameDisplay').textContent = '👤 ' + user.username;
+                    currentUser = user;
+                } else {
+                    window.location.href = '/login';
+                }
+            } catch (e) {
+                window.location.href = '/login';
+            }
+        }
+
+        // ======== خروج ========
+        document.getElementById('logoutBtn').addEventListener('click', async () => {
+            await fetch(`${API_BASE}/auth/logout`, { method: 'POST' });
+            window.location.href = '/login';
+        });
+
+        // ======== مدیریت تب‌ها ========
         document.querySelectorAll('.tab-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
                 document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
-                if (btn.dataset.tab === 'history') {
-                    loadHistory();
-                }
+                if (btn.dataset.tab === 'history') loadHistory();
             });
         });
 
-        // فرم اسکرپ
+        // ======== فرم اسکرپ ========
         const form = document.getElementById('scrapeForm');
         const urlInput = document.getElementById('urlInput');
         const submitBtn = document.getElementById('submitBtn');
@@ -865,18 +1191,19 @@ HTML_PAGE = """
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
-
             const url = urlInput.value.trim();
-            if (!url) {
-                showError('لطفاً آدرس وب‌سایت را وارد کنید.');
-                return;
-            }
+            if (!url) { showError('لطفاً آدرس وب‌سایت را وارد کنید.'); return; }
 
-            const extractMobile = document.getElementById('chkMobile').checked;
-            const extractLandline = document.getElementById('chkLandline').checked;
-            const extractEmail = document.getElementById('chkEmail').checked;
-            const extractInstagram = document.getElementById('chkInstagram').checked;
-            const extractYoutube = document.getElementById('chkYoutube').checked;
+            const payload = {
+                urls: [url],
+                extract_mobile: document.getElementById('chkMobile').checked,
+                extract_landline: document.getElementById('chkLandline').checked,
+                extract_email: document.getElementById('chkEmail').checked,
+                extract_links: false,
+                extract_instagram: document.getElementById('chkInstagram').checked,
+                extract_youtube: document.getElementById('chkYoutube').checked,
+                save_history: true
+            };
 
             submitBtn.disabled = true;
             loading.classList.add('active');
@@ -887,46 +1214,19 @@ HTML_PAGE = """
                 const response = await fetch(`${API_BASE}/scrape`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        urls: [url],
-                        extract_mobile: extractMobile,
-                        extract_landline: extractLandline,
-                        extract_email: extractEmail,
-                        extract_links: false,
-                        extract_instagram: extractInstagram,
-                        extract_youtube: extractYoutube,
-                        save_history: true
-                    })
+                    body: JSON.stringify(payload)
                 });
-
                 const data = await response.json();
-
-                if (!response.ok) {
-                    showError(`خطا: ${data.detail || 'مشکل در ارتباط با سرور'}`);
-                    return;
-                }
-
-                if (data.results && data.results.length > 0) {
-                    const result = data.results[0];
-                    if (result.error) {
-                        showError(`خطا: ${result.error}`);
-                        return;
-                    }
-                    displayResults(result);
-                } else {
-                    showError('نتیجه‌ای دریافت نشد.');
-                }
-
-            } catch (err) {
-                showError(`خطا در ارتباط با سرور: ${err.message}`);
-            } finally {
-                submitBtn.disabled = false;
-                loading.classList.remove('active');
-            }
+                if (!response.ok) { showError(data.detail || 'خطا'); return; }
+                if (data.results && data.results[0]) {
+                    if (data.results[0].error) { showError(data.results[0].error); return; }
+                    displayResults(data.results[0]);
+                } else { showError('نتیجه‌ای دریافت نشد.'); }
+            } catch (err) { showError('خطا در ارتباط با سرور'); }
+            finally { submitBtn.disabled = false; loading.classList.remove('active'); }
         });
 
         function displayResults(result) {
-            const rows = [];
             const categories = [
                 { key: 'mobiles', label: '📱 موبایل' },
                 { key: 'landlines', label: '🏠 ثابت' },
@@ -934,42 +1234,15 @@ HTML_PAGE = """
                 { key: 'instagram', label: '📸 اینستاگرام' },
                 { key: 'youtube', label: '▶️ یوتیوب' }
             ];
-
-            let total = 0;
-            let statsHTML = '';
-
+            let statsHTML = '', rows = [];
             categories.forEach(cat => {
                 const values = result[cat.key] || [];
-                const count = values.length;
-                total += count;
-                const icon = cat.label.split(' ')[0];
-                statsHTML += `<div class="stat-card">${icon} <span class="count">${count}</span> ${cat.label.split(' ').slice(1).join(' ')}</div>`;
-
-                if (count === 0) {
-                    rows.push({ type: cat.label, value: '—' });
-                } else {
-                    values.forEach(v => {
-                        rows.push({ type: cat.label, value: v });
-                    });
-                }
+                statsHTML += `<div class="stat-card">${cat.label.split(' ')[0]} <span class="count">${values.length}</span> ${cat.label.split(' ').slice(1).join(' ')}</div>`;
+                if (values.length === 0) rows.push({ type: cat.label, value: '—' });
+                else values.forEach(v => rows.push({ type: cat.label, value: v }));
             });
-
             stats.innerHTML = statsHTML;
-
-            resultBody.innerHTML = '';
-            rows.forEach(row => {
-                const tr = document.createElement('tr');
-                const td1 = document.createElement('td');
-                td1.className = 'type-cell';
-                td1.textContent = row.type;
-                const td2 = document.createElement('td');
-                td2.className = 'value-cell';
-                td2.textContent = row.value;
-                tr.appendChild(td1);
-                tr.appendChild(td2);
-                resultBody.appendChild(tr);
-            });
-
+            resultBody.innerHTML = rows.map(r => `<tr><td class="type-cell">${r.type}</td><td class="value-cell">${r.value}</td></tr>`).join('');
             resultsBox.classList.add('active');
         }
 
@@ -978,106 +1251,96 @@ HTML_PAGE = """
             errorDiv.classList.add('active');
         }
 
-        // بارگذاری تاریخچه
+        // ======== تاریخچه ========
         async function loadHistory() {
             const listEl = document.getElementById('historyList');
             try {
-                const response = await fetch(`${API_BASE}/history?limit=50`);
-                if (!response.ok) throw new Error('خطا در دریافت تاریخچه');
-                const data = await response.json();
-
+                const resp = await fetch(`${API_BASE}/history?limit=50`);
+                if (!resp.ok) throw new Error('خطا');
+                const data = await resp.json();
+                currentHistoryData = data;
                 if (!data || data.length === 0) {
-                    listEl.innerHTML = '<div style="text-align:center; color:#6a8aaa; padding: 20px;">هیچ اسکرپی ثبت نشده است.</div>';
+                    listEl.innerHTML = '<div style="text-align:center; color:#6a8aaa; padding:20px;">هیچ اسکرپی ثبت نشده است.</div>';
                     return;
                 }
-
                 let html = '';
                 data.forEach(item => {
-                    const mobCount = (item.mobiles || []).length;
-                    const emailCount = (item.emails || []).length;
-                    const instaCount = (item.instagram || []).length;
-                    const ytCount = (item.youtube || []).length;
+                    const mob = (item.mobiles||[]).length, email = (item.emails||[]).length;
+                    const insta = (item.instagram||[]).length, yt = (item.youtube||[]).length;
                     const time = new Date(item.timestamp).toLocaleString('fa-IR');
-                    html += `
-                        <div class="history-item" data-id="${item.id}">
-                            <div class="info">
-                                <span class="url">${item.url}</span>
-                                <span>🕒 ${time}</span>
-                                <span>📱 ${mobCount}</span>
-                                <span>✉️ ${emailCount}</span>
-                                <span>📸 ${instaCount}</span>
-                                <span>▶️ ${ytCount}</span>
-                            </div>
-                            <span class="badge">مشاهده جزئیات</span>
-                        </div>
-                    `;
+                    html += `<div class="history-item" data-id="${item.id}">
+                        <div class="info"><span class="url">${item.url}</span><span>🕒 ${time}</span>
+                        <span>📱 ${mob}</span><span>✉️ ${email}</span><span>📸 ${insta}</span><span>▶️ ${yt}</span></div>
+                        <span class="badge">مشاهده</span>
+                    </div>`;
                 });
                 listEl.innerHTML = html;
-
-                // رویداد کلیک برای نمایش جزئیات
                 document.querySelectorAll('.history-item').forEach(el => {
-                    el.addEventListener('click', () => {
-                        const id = el.dataset.id;
-                        loadHistoryDetail(id);
-                    });
+                    el.addEventListener('click', () => loadHistoryDetail(el.dataset.id));
                 });
-
             } catch (err) {
-                listEl.innerHTML = `<div style="text-align:center; color:#ff6b6b; padding: 20px;">❌ ${err.message}</div>`;
+                listEl.innerHTML = `<div style="text-align:center; color:#ff6b6b;">❌ خطا در بارگذاری</div>`;
             }
         }
 
         async function loadHistoryDetail(id) {
             const detailDiv = document.getElementById('historyDetail');
-            const contentDiv = document.getElementById('historyDetailContent');
+            const content = document.getElementById('historyDetailContent');
             try {
-                const response = await fetch(`${API_BASE}/history/${id}`);
-                if (!response.ok) throw new Error('خطا در دریافت جزئیات');
-                const item = await response.json();
-
-                const categories = [
+                const resp = await fetch(`${API_BASE}/history/${id}`);
+                if (!resp.ok) throw new Error('خطا');
+                const item = await resp.json();
+                const cats = [
                     { key: 'mobiles', label: '📱 موبایل' },
                     { key: 'landlines', label: '🏠 ثابت' },
                     { key: 'emails', label: '✉️ ایمیل' },
                     { key: 'instagram', label: '📸 اینستاگرام' },
                     { key: 'youtube', label: '▶️ یوتیوب' }
                 ];
-
-                let html = `<div style="margin-bottom:10px; color:#a0b4c8;">📌 <strong>${item.url}</strong>  —  🕒 ${new Date(item.timestamp).toLocaleString('fa-IR')}</div>`;
-                html += `<table class="results-table" style="margin-top:10px;">
-                            <thead><tr><th>نوع</th><th>مقدار</th></tr></thead><tbody>`;
+                let html = `<div style="margin-bottom:10px; color:#a0b4c8;">📌 <strong>${item.url}</strong> — 🕒 ${new Date(item.timestamp).toLocaleString('fa-IR')}</div>`;
+                html += `<table class="results-table"><thead><tr><th>نوع</th><th>مقدار</th></tr></thead><tbody>`;
                 let found = false;
-                categories.forEach(cat => {
-                    const values = item[cat.key] || [];
-                    if (values.length === 0) {
-                        html += `<tr><td class="type-cell">${cat.label}</td><td class="value-cell">—</td></tr>`;
-                    } else {
-                        found = true;
-                        values.forEach(v => {
-                            html += `<tr><td class="type-cell">${cat.label}</td><td class="value-cell">${v}</td></tr>`;
-                        });
-                    }
+                cats.forEach(cat => {
+                    const vals = item[cat.key] || [];
+                    if (vals.length === 0) html += `<tr><td class="type-cell">${cat.label}</td><td class="value-cell">—</td></tr>`;
+                    else { found = true; vals.forEach(v => html += `<tr><td class="type-cell">${cat.label}</td><td class="value-cell">${v}</td></tr>`); }
                 });
-                if (!found) {
-                    html += `<tr><td colspan="2" style="text-align:center; color:#6a8aaa;">داده‌ای یافت نشد</td></tr>`;
-                }
+                if (!found) html += `<tr><td colspan="2" style="text-align:center; color:#6a8aaa;">داده‌ای یافت نشد</td></tr>`;
                 html += `</tbody></table>`;
-                contentDiv.innerHTML = html;
+                content.innerHTML = html;
                 detailDiv.classList.add('active');
-
-                // اسکرول به قسمت جزئیات
                 detailDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
-
             } catch (err) {
-                contentDiv.innerHTML = `<div style="color:#ff6b6b;">❌ ${err.message}</div>`;
+                content.innerHTML = `<div style="color:#ff6b6b;">❌ ${err.message}</div>`;
                 detailDiv.classList.add('active');
             }
         }
 
-        // بارگذاری تاریخچه هنگام کلیک روی تب
-        document.getElementById('refreshHistory').addEventListener('click', loadHistory);
+        // ======== خروجی گرفتن ========
+        async function exportHistory(format) {
+            try {
+                const resp = await fetch(`${API_BASE}/history/export?format=${format}`);
+                if (!resp.ok) throw new Error('خطا');
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `history.${format === 'json' ? 'json' : format === 'csv' ? 'csv' : 'txt'}`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+            } catch (err) {
+                alert('خطا در خروجی گرفتن: ' + err.message);
+            }
+        }
 
-        // Normalize URL
+        document.getElementById('refreshHistory').addEventListener('click', loadHistory);
+        document.getElementById('exportHistoryCSV').addEventListener('click', () => exportHistory('csv'));
+        document.getElementById('exportHistoryJSON').addEventListener('click', () => exportHistory('json'));
+        document.getElementById('exportHistoryTXT').addEventListener('click', () => exportHistory('txt'));
+
+        // ======== Normalize URL ========
         urlInput.addEventListener('blur', function() {
             let val = this.value.trim();
             if (val && !val.startsWith('http://') && !val.startsWith('https://')) {
@@ -1085,14 +1348,15 @@ HTML_PAGE = """
             }
         });
 
-        // بارگذاری اولیه تاریخچه اگر تب فعال باشه (فعلاً غیرفعال)
+        // ======== راه‌اندازی ========
+        loadUser();
     </script>
 </body>
 </html>
 """
 
 # ============================================================
-# 🌐 سرور وب (FastAPI) با CORS و رابط کاربری
+# 🌐 سرور وب (FastAPI) با احراز هویت
 # ============================================================
 
 app = FastAPI(title="Minouta Scraper API", version="1.0")
@@ -1105,7 +1369,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-db_manager = DatabaseManager()
+# ============================================================
+# 📡 مدل‌های داده برای API
+# ============================================================
+
+class UserCreate(BaseModel):
+    username: str
+    email: EmailStr
+    password: str
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
+class UserResponse(BaseModel):
+    id: int
+    username: str
+    email: str
+    created_at: datetime
 
 class ScrapeRequest(BaseModel):
     urls: List[str]
@@ -1120,18 +1401,98 @@ class ScrapeRequest(BaseModel):
     extract_youtube: bool = False
     save_history: bool = True
 
-@app.get("/", response_class=HTMLResponse)
-def root():
-    return HTML_PAGE
+# ============================================================
+# 🔐 مسیرهای احراز هویت
+# ============================================================
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page():
+    return LOGIN_PAGE
+
+@app.get("/register", response_class=HTMLResponse)
+async def register_page():
+    return REGISTER_PAGE
+
+@app.get("/app", response_class=HTMLResponse)
+async def app_page():
+    return APP_PAGE
+
+@app.post("/auth/register")
+async def register(user_data: UserCreate):
+    db = SessionLocal()
+    # بررسی وجود کاربر
+    existing_user = db.query(User).filter(
+        (User.username == user_data.username) | (User.email == user_data.email)
+    ).first()
+    if existing_user:
+        db.close()
+        raise HTTPException(status_code=400, detail="Username or email already exists")
+    
+    hashed = get_password_hash(user_data.password)
+    new_user = User(
+        username=user_data.username,
+        email=user_data.email,
+        hashed_password=hashed
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    db.close()
+    return {"message": "User created successfully", "user_id": new_user.id}
+
+@app.post("/auth/login")
+async def login(user_data: UserLogin, response: Response):
+    db = SessionLocal()
+    user = db.query(User).filter(User.username == user_data.username).first()
+    db.close()
+    
+    if not user or not verify_password(user_data.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    
+    access_token = create_access_token(data={"sub": str(user.id)})
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        secure=os.getenv("ENV") == "production",
+        samesite="lax"
+    )
+    return {"message": "Login successful", "username": user.username}
+
+@app.post("/auth/logout")
+async def logout(response: Response):
+    response.delete_cookie("access_token")
+    return {"message": "Logged out"}
+
+@app.get("/auth/me")
+async def get_me(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return UserResponse(
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        created_at=user.created_at
+    )
+
+# ============================================================
+# 📡 مسیرهای اصلی برنامه (با احراز هویت)
+# ============================================================
 
 @app.post("/scrape")
-def scrape_api(request: ScrapeRequest):
+async def scrape(request: ScrapeRequest, req: Request):
+    user = await get_current_user_required(req)
+    
     engine = ScraperEngine(
         timeout=request.timeout,
         user_agent=request.user_agent,
         proxy=request.proxy
     )
+    
     results = []
+    db = DatabaseManager()
     for url in request.urls:
         try:
             result = engine.scrape(
@@ -1144,19 +1505,22 @@ def scrape_api(request: ScrapeRequest):
                 extract_youtube=request.extract_youtube
             )
             if request.save_history:
-                db_manager.save_result(result)
-
+                db.save_result(user.id, result)
+            
             result_dict = asdict(result)
             result_dict['timestamp'] = result_dict['timestamp'].isoformat()
             results.append(result_dict)
-
         except Exception as e:
             results.append({"url": url, "error": str(e)})
+    db.close()
     return JSONResponse(content={"results": results})
 
 @app.get("/history")
-def history_api(limit: int = 20):
-    records = db_manager.get_all(limit=limit)
+async def history(req: Request, limit: int = 20):
+    user = await get_current_user_required(req)
+    db = DatabaseManager()
+    records = db.get_user_history(user.id, limit=limit)
+    db.close()
     return [
         {
             "id": r.id,
@@ -1173,8 +1537,11 @@ def history_api(limit: int = 20):
     ]
 
 @app.get("/history/{id}")
-def get_history_item(id: int):
-    rec = db_manager.get_by_id(id)
+async def history_item(id: int, req: Request):
+    user = await get_current_user_required(req)
+    db = DatabaseManager()
+    rec = db.get_history_by_id(id, user.id)
+    db.close()
     if not rec:
         raise HTTPException(status_code=404, detail="Not found")
     return {
@@ -1189,8 +1556,58 @@ def get_history_item(id: int):
         "youtube": rec.youtube
     }
 
+@app.get("/history/export")
+async def export_history(req: Request, format: str = "json"):
+    user = await get_current_user_required(req)
+    db = DatabaseManager()
+    records = db.get_user_history(user.id, limit=1000)
+    db.close()
+    
+    data = []
+    for r in records:
+        data.append({
+            "id": r.id,
+            "url": r.url,
+            "timestamp": r.timestamp.isoformat(),
+            "mobiles": r.mobiles,
+            "landlines": r.landlines,
+            "emails": r.emails,
+            "links": r.links,
+            "instagram": r.instagram,
+            "youtube": r.youtube
+        })
+    
+    if format.lower() == "json":
+        content = json.dumps(data, indent=2, ensure_ascii=False)
+        return Response(content=content, media_type="application/json", headers={"Content-Disposition": "attachment; filename=history.json"})
+    
+    elif format.lower() == "csv":
+        import io
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=["id", "url", "timestamp", "mobiles", "landlines", "emails", "links", "instagram", "youtube"])
+        writer.writeheader()
+        for row in data:
+            row_copy = row.copy()
+            for key in ["mobiles", "landlines", "emails", "links", "instagram", "youtube"]:
+                row_copy[key] = ", ".join(row_copy[key]) if row_copy[key] else ""
+            writer.writerow(row_copy)
+        return Response(content=output.getvalue(), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=history.csv"})
+    
+    else:  # txt
+        lines = []
+        for item in data:
+            lines.append(f"ID: {item['id']}")
+            lines.append(f"URL: {item['url']}")
+            lines.append(f"Time: {item['timestamp']}")
+            for key in ["mobiles", "landlines", "emails", "links", "instagram", "youtube"]:
+                if item[key]:
+                    lines.append(f"{key}: {', '.join(item[key])}")
+            lines.append("")
+        content = "\n".join(lines)
+        return Response(content=content, media_type="text/plain", headers={"Content-Disposition": "attachment; filename=history.txt"})
+
 @app.get("/ping")
-def ping():
+async def ping():
     return {"status": "ok"}
 
 # ============================================================
@@ -1207,39 +1624,12 @@ def main():
             cli = RichCLI()
             cli.run()
             return
-        elif mode == "simple":
-            if len(sys.argv) < 3:
-                print("Usage: python minouta.py simple <url> [url2 ...]")
-                return
-            urls = sys.argv[2:]
-            engine = ScraperEngine()
-            for url in urls:
-                try:
-                    result = engine.scrape(
-                        url,
-                        extract_mobile=True,
-                        extract_landline=True,
-                        extract_email=True,
-                        extract_links=False,
-                        extract_instagram=True,
-                        extract_youtube=True
-                    )
-                    print(f"Results for {url}:")
-                    print(f"  Mobiles: {result.mobiles}")
-                    print(f"  Landlines: {result.landlines}")
-                    print(f"  Emails: {result.emails}")
-                    print(f"  Links: {result.links}")
-                    print(f"  Instagram: {result.instagram}")
-                    print(f"  YouTube: {result.youtube}")
-                except Exception as e:
-                    print(f"Error on {url}: {e}")
-            return
         else:
-            print("Unknown mode. Available: cli, api, simple")
+            print("Unknown mode. Available: api, cli")
             return
-
-    cli = RichCLI()
-    cli.run()
+    
+    # پیش‌فرض: اجرای حالت API
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 
 if __name__ == "__main__":
     main()
