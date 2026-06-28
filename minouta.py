@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ============================================================
-# 🕷️ Minouta Web Scraper - Core + CLI + API + Web UI
+# 🕷️ Minouta Web Scraper - Core + CLI + API + Full Web UI
 # ============================================================
 
 import sys
@@ -49,9 +49,8 @@ _EMAIL_REGEX = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.
 _INSTAGRAM_REGEX = re.compile(r'https?://(?:www\.)?instagram\.com/([a-zA-Z0-9_.]+)/?', re.IGNORECASE)
 _YOUTUBE_REGEX = re.compile(r'https?://(?:www\.)?youtube\.com/(?:@|c/|user/|channel/)([a-zA-Z0-9_-]+)/?', re.IGNORECASE)
 
-# لینک غیرفعال شد (خطای bool)
 def extract_links(text: str, base_url: str = ""):
-    return []
+    return []  # غیرفعال شده به دلیل خطای bool
 
 def _normalize_phone(num: str) -> str:
     if num.startswith('+98'):
@@ -419,7 +418,7 @@ class RichCLI:
             console.print(f"[red]Export error: {e}[/]")
 
 # ============================================================
-# 🌐 صفحه وب - رابط کاربری گرافیکی
+# 🌐 صفحه وب - رابط کاربری گرافیکی پیشرفته
 # ============================================================
 
 HTML_PAGE = """
@@ -439,28 +438,19 @@ HTML_PAGE = """
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%);
             min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
             padding: 20px;
             color: #e8e8e8;
         }
         .container {
-            max-width: 900px;
-            width: 100%;
-            background: rgba(255,255,255,0.05);
-            backdrop-filter: blur(20px);
-            border-radius: 24px;
-            padding: 40px;
-            border: 1px solid rgba(79, 172, 254, 0.15);
-            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+            max-width: 1100px;
+            margin: 0 auto;
         }
         .header {
             text-align: center;
             margin-bottom: 30px;
         }
         .header h1 {
-            font-size: 2.5rem;
+            font-size: 2.8rem;
             background: linear-gradient(135deg, #4facfe, #00f2fe);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
@@ -470,6 +460,45 @@ HTML_PAGE = """
             color: #a0b4c8;
             margin-top: 8px;
             font-size: 1.1rem;
+        }
+        .tabs {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            margin-bottom: 25px;
+        }
+        .tab-btn {
+            padding: 12px 30px;
+            background: rgba(255,255,255,0.05);
+            border: 2px solid #2a3f5f;
+            border-radius: 12px;
+            color: #b0c4de;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-family: inherit;
+        }
+        .tab-btn:hover {
+            background: rgba(255,255,255,0.1);
+        }
+        .tab-btn.active {
+            background: rgba(79, 172, 254, 0.2);
+            border-color: #4facfe;
+            color: #fff;
+            box-shadow: 0 0 20px rgba(79, 172, 254, 0.15);
+        }
+        .tab-content {
+            display: none;
+            background: rgba(255,255,255,0.05);
+            backdrop-filter: blur(20px);
+            border-radius: 24px;
+            padding: 30px;
+            border: 1px solid rgba(79, 172, 254, 0.15);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+        }
+        .tab-content.active {
+            display: block;
         }
         .form-group {
             margin-bottom: 20px;
@@ -481,7 +510,7 @@ HTML_PAGE = """
             color: #b0c4de;
             font-size: 0.95rem;
         }
-        input[type="text"], input[type="number"] {
+        input[type="text"] {
             width: 100%;
             padding: 12px 16px;
             background: rgba(255,255,255,0.07);
@@ -492,14 +521,14 @@ HTML_PAGE = """
             transition: all 0.3s ease;
             outline: none;
         }
-        input[type="text"]:focus, input[type="number"]:focus {
+        input[type="text"]:focus {
             border-color: #4facfe;
             background: rgba(255,255,255,0.12);
             box-shadow: 0 0 20px rgba(79, 172, 254, 0.15);
         }
         .checkbox-group {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             gap: 12px;
             margin: 10px 0 20px 0;
         }
@@ -531,6 +560,13 @@ HTML_PAGE = """
             font-size: 0.95rem;
             color: #d0d8ec;
         }
+        .checkbox-item.disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+        .checkbox-item.disabled input {
+            cursor: not-allowed;
+        }
         .btn {
             width: 100%;
             padding: 14px;
@@ -555,7 +591,7 @@ HTML_PAGE = """
         .loading {
             display: none;
             text-align: center;
-            padding: 20px;
+            padding: 30px;
             font-size: 1.1rem;
             color: #4facfe;
         }
@@ -564,22 +600,22 @@ HTML_PAGE = """
         }
         .spinner {
             display: inline-block;
-            width: 40px;
-            height: 40px;
+            width: 50px;
+            height: 50px;
             border: 4px solid rgba(79, 172, 254, 0.15);
             border-top-color: #4facfe;
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
-            margin-bottom: 12px;
+            margin-bottom: 15px;
         }
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
-        .results {
-            margin-top: 30px;
+        .results-box {
+            margin-top: 25px;
             display: none;
         }
-        .results.active {
+        .results-box.active {
             display: block;
         }
         .results-table {
@@ -598,7 +634,7 @@ HTML_PAGE = """
             border-bottom: 2px solid rgba(79, 172, 254, 0.1);
         }
         .results-table td {
-            padding: 12px 16px;
+            padding: 10px 16px;
             border-bottom: 1px solid rgba(255,255,255,0.04);
             color: #e0e8f0;
         }
@@ -625,14 +661,6 @@ HTML_PAGE = """
         .error.active {
             display: block;
         }
-        .footer {
-            text-align: center;
-            margin-top: 30px;
-            padding-top: 20px;
-            border-top: 1px solid rgba(255,255,255,0.06);
-            color: #6a8aaa;
-            font-size: 0.85rem;
-        }
         .stats {
             display: flex;
             flex-wrap: wrap;
@@ -655,16 +683,64 @@ HTML_PAGE = """
             color: #4facfe;
             font-size: 1.2rem;
         }
-        @media (max-width: 600px) {
-            .container {
-                padding: 20px;
-            }
-            .header h1 {
-                font-size: 1.8rem;
-            }
-            .checkbox-group {
-                grid-template-columns: repeat(2, 1fr);
-            }
+        .history-list {
+            margin-top: 15px;
+        }
+        .history-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            background: rgba(255,255,255,0.04);
+            border-radius: 10px;
+            margin-bottom: 8px;
+            border: 1px solid rgba(255,255,255,0.06);
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        .history-item:hover {
+            background: rgba(255,255,255,0.08);
+            border-color: rgba(79, 172, 254, 0.2);
+        }
+        .history-item .info {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        .history-item .info span {
+            color: #a0b4c8;
+        }
+        .history-item .info .url {
+            color: #4facfe;
+            font-weight: 500;
+        }
+        .history-item .badge {
+            background: rgba(79, 172, 254, 0.15);
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            color: #8ab4ff;
+        }
+        .detail-view {
+            margin-top: 20px;
+            display: none;
+        }
+        .detail-view.active {
+            display: block;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid rgba(255,255,255,0.06);
+            color: #6a8aaa;
+            font-size: 0.85rem;
+        }
+        @media (max-width: 700px) {
+            .container { padding: 0; }
+            .tab-btn { padding: 10px 16px; font-size: 0.9rem; }
+            .checkbox-group { grid-template-columns: repeat(2, 1fr); }
+            .history-item { flex-direction: column; align-items: flex-start; gap: 8px; }
         }
     </style>
 </head>
@@ -675,64 +751,85 @@ HTML_PAGE = """
             <p>استخراج اطلاعات از وب‌سایت‌ها با یک کلیک</p>
         </div>
 
-        <div id="error" class="error"></div>
-
-        <form id="scrapeForm">
-            <div class="form-group">
-                <label>🌐 آدرس وب‌سایت</label>
-                <input type="text" id="urlInput" placeholder="مثلاً: hamzehalizadeh.ir" required>
-            </div>
-
-            <div class="form-group">
-                <label>🔍 انتخاب داده‌ها برای استخراج</label>
-                <div class="checkbox-group">
-                    <div class="checkbox-item">
-                        <input type="checkbox" id="chkMobile" checked>
-                        <label for="chkMobile">📱 موبایل</label>
-                    </div>
-                    <div class="checkbox-item">
-                        <input type="checkbox" id="chkLandline" checked>
-                        <label for="chkLandline">🏠 ثابت</label>
-                    </div>
-                    <div class="checkbox-item">
-                        <input type="checkbox" id="chkEmail" checked>
-                        <label for="chkEmail">✉️ ایمیل</label>
-                    </div>
-                    <div class="checkbox-item">
-                        <input type="checkbox" id="chkInstagram" checked>
-                        <label for="chkInstagram">📸 اینستاگرام</label>
-                    </div>
-                    <div class="checkbox-item">
-                        <input type="checkbox" id="chkYoutube" checked>
-                        <label for="chkYoutube">▶️ یوتیوب</label>
-                    </div>
-                    <div class="checkbox-item" style="opacity:0.5;">
-                        <input type="checkbox" id="chkLinks" disabled>
-                        <label for="chkLinks">🔗 لینک (غیرفعال)</label>
-                    </div>
-                </div>
-            </div>
-
-            <button type="submit" class="btn" id="submitBtn">🚀 شروع اسکرپ</button>
-        </form>
-
-        <div class="loading" id="loading">
-            <div class="spinner"></div>
-            <div>در حال اسکرپ کردن... لطفاً صبر کنید</div>
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="scrape">🔍 اسکرپ جدید</button>
+            <button class="tab-btn" data-tab="history">📋 تاریخچه</button>
         </div>
 
-        <div class="results" id="results">
-            <div class="stats" id="stats"></div>
-            <table class="results-table" id="resultTable">
-                <thead>
-                    <tr>
-                        <th>نوع</th>
-                        <th>مقدار</th>
-                    </tr>
-                </thead>
-                <tbody id="resultBody">
-                </tbody>
-            </table>
+        <!-- تب اسکرپ -->
+        <div id="tab-scrape" class="tab-content active">
+            <div id="error" class="error"></div>
+            <form id="scrapeForm">
+                <div class="form-group">
+                    <label>🌐 آدرس وب‌سایت</label>
+                    <input type="text" id="urlInput" placeholder="مثلاً: hamzehalizadeh.ir" required>
+                </div>
+
+                <div class="form-group">
+                    <label>🔍 انتخاب داده‌ها برای استخراج</label>
+                    <div class="checkbox-group">
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="chkMobile" checked>
+                            <label for="chkMobile">📱 موبایل</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="chkLandline" checked>
+                            <label for="chkLandline">🏠 ثابت</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="chkEmail" checked>
+                            <label for="chkEmail">✉️ ایمیل</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="chkInstagram" checked>
+                            <label for="chkInstagram">📸 اینستاگرام</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="chkYoutube" checked>
+                            <label for="chkYoutube">▶️ یوتیوب</label>
+                        </div>
+                        <div class="checkbox-item disabled">
+                            <input type="checkbox" id="chkLinks" disabled>
+                            <label for="chkLinks">🔗 لینک (غیرفعال)</label>
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn" id="submitBtn">🚀 شروع اسکرپ</button>
+            </form>
+
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <div>در حال اسکرپ کردن... لطفاً صبر کنید</div>
+            </div>
+
+            <div class="results-box" id="resultsBox">
+                <div class="stats" id="stats"></div>
+                <table class="results-table" id="resultTable">
+                    <thead>
+                        <tr>
+                            <th>نوع</th>
+                            <th>مقدار</th>
+                        </tr>
+                    </thead>
+                    <tbody id="resultBody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- تب تاریخچه -->
+        <div id="tab-history" class="tab-content">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h2 style="color: #b0c4de;">📋 اسکرپ‌های قبلی</h2>
+                <button class="btn" style="width: auto; padding: 8px 20px; font-size: 0.9rem;" id="refreshHistory">🔄 بارگذاری مجدد</button>
+            </div>
+            <div id="historyList" class="history-list">
+                <div style="text-align:center; color:#6a8aaa; padding: 20px;">در حال بارگذاری...</div>
+            </div>
+            <div class="detail-view" id="historyDetail">
+                <h3 style="color: #b0c4de; margin-bottom: 10px;">📄 جزئیات اسکرپ</h3>
+                <div id="historyDetailContent"></div>
+            </div>
         </div>
 
         <div class="footer">
@@ -741,16 +838,30 @@ HTML_PAGE = """
     </div>
 
     <script>
+        const API_BASE = window.location.origin;
+
+        // مدیریت تب‌ها
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+                document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+                if (btn.dataset.tab === 'history') {
+                    loadHistory();
+                }
+            });
+        });
+
+        // فرم اسکرپ
         const form = document.getElementById('scrapeForm');
         const urlInput = document.getElementById('urlInput');
         const submitBtn = document.getElementById('submitBtn');
         const loading = document.getElementById('loading');
-        const results = document.getElementById('results');
+        const resultsBox = document.getElementById('resultsBox');
         const resultBody = document.getElementById('resultBody');
         const stats = document.getElementById('stats');
         const errorDiv = document.getElementById('error');
-
-        const API_BASE = window.location.origin;
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -769,7 +880,7 @@ HTML_PAGE = """
 
             submitBtn.disabled = true;
             loading.classList.add('active');
-            results.classList.remove('active');
+            resultsBox.classList.remove('active');
             errorDiv.classList.remove('active');
 
             try {
@@ -817,11 +928,11 @@ HTML_PAGE = """
         function displayResults(result) {
             const rows = [];
             const categories = [
-                { key: 'mobiles', label: '📱 موبایل', icon: '📱' },
-                { key: 'landlines', label: '🏠 ثابت', icon: '🏠' },
-                { key: 'emails', label: '✉️ ایمیل', icon: '✉️' },
-                { key: 'instagram', label: '📸 اینستاگرام', icon: '📸' },
-                { key: 'youtube', label: '▶️ یوتیوب', icon: '▶️' }
+                { key: 'mobiles', label: '📱 موبایل' },
+                { key: 'landlines', label: '🏠 ثابت' },
+                { key: 'emails', label: '✉️ ایمیل' },
+                { key: 'instagram', label: '📸 اینستاگرام' },
+                { key: 'youtube', label: '▶️ یوتیوب' }
             ];
 
             let total = 0;
@@ -831,21 +942,20 @@ HTML_PAGE = """
                 const values = result[cat.key] || [];
                 const count = values.length;
                 total += count;
-                statsHTML += `<div class="stat-card">${cat.icon} <span class="count">${count}</span> ${cat.label.split(' ').slice(1).join(' ')}</div>`;
+                const icon = cat.label.split(' ')[0];
+                statsHTML += `<div class="stat-card">${icon} <span class="count">${count}</span> ${cat.label.split(' ').slice(1).join(' ')}</div>`;
 
                 if (count === 0) {
-                    rows.push({ type: cat.label, value: '—', isHeader: false });
+                    rows.push({ type: cat.label, value: '—' });
                 } else {
                     values.forEach(v => {
-                        rows.push({ type: cat.label, value: v, isHeader: false });
+                        rows.push({ type: cat.label, value: v });
                     });
                 }
             });
 
-            // نمایش آمار
             stats.innerHTML = statsHTML;
 
-            // نمایش جدول
             resultBody.innerHTML = '';
             rows.forEach(row => {
                 const tr = document.createElement('tr');
@@ -860,7 +970,7 @@ HTML_PAGE = """
                 resultBody.appendChild(tr);
             });
 
-            results.classList.add('active');
+            resultsBox.classList.add('active');
         }
 
         function showError(msg) {
@@ -868,13 +978,114 @@ HTML_PAGE = """
             errorDiv.classList.add('active');
         }
 
-        // اضافه کردن https:// اگر کاربر فراموش کرد
+        // بارگذاری تاریخچه
+        async function loadHistory() {
+            const listEl = document.getElementById('historyList');
+            try {
+                const response = await fetch(`${API_BASE}/history?limit=50`);
+                if (!response.ok) throw new Error('خطا در دریافت تاریخچه');
+                const data = await response.json();
+
+                if (!data || data.length === 0) {
+                    listEl.innerHTML = '<div style="text-align:center; color:#6a8aaa; padding: 20px;">هیچ اسکرپی ثبت نشده است.</div>';
+                    return;
+                }
+
+                let html = '';
+                data.forEach(item => {
+                    const mobCount = (item.mobiles || []).length;
+                    const emailCount = (item.emails || []).length;
+                    const instaCount = (item.instagram || []).length;
+                    const ytCount = (item.youtube || []).length;
+                    const time = new Date(item.timestamp).toLocaleString('fa-IR');
+                    html += `
+                        <div class="history-item" data-id="${item.id}">
+                            <div class="info">
+                                <span class="url">${item.url}</span>
+                                <span>🕒 ${time}</span>
+                                <span>📱 ${mobCount}</span>
+                                <span>✉️ ${emailCount}</span>
+                                <span>📸 ${instaCount}</span>
+                                <span>▶️ ${ytCount}</span>
+                            </div>
+                            <span class="badge">مشاهده جزئیات</span>
+                        </div>
+                    `;
+                });
+                listEl.innerHTML = html;
+
+                // رویداد کلیک برای نمایش جزئیات
+                document.querySelectorAll('.history-item').forEach(el => {
+                    el.addEventListener('click', () => {
+                        const id = el.dataset.id;
+                        loadHistoryDetail(id);
+                    });
+                });
+
+            } catch (err) {
+                listEl.innerHTML = `<div style="text-align:center; color:#ff6b6b; padding: 20px;">❌ ${err.message}</div>`;
+            }
+        }
+
+        async function loadHistoryDetail(id) {
+            const detailDiv = document.getElementById('historyDetail');
+            const contentDiv = document.getElementById('historyDetailContent');
+            try {
+                const response = await fetch(`${API_BASE}/history/${id}`);
+                if (!response.ok) throw new Error('خطا در دریافت جزئیات');
+                const item = await response.json();
+
+                const categories = [
+                    { key: 'mobiles', label: '📱 موبایل' },
+                    { key: 'landlines', label: '🏠 ثابت' },
+                    { key: 'emails', label: '✉️ ایمیل' },
+                    { key: 'instagram', label: '📸 اینستاگرام' },
+                    { key: 'youtube', label: '▶️ یوتیوب' }
+                ];
+
+                let html = `<div style="margin-bottom:10px; color:#a0b4c8;">📌 <strong>${item.url}</strong>  —  🕒 ${new Date(item.timestamp).toLocaleString('fa-IR')}</div>`;
+                html += `<table class="results-table" style="margin-top:10px;">
+                            <thead><tr><th>نوع</th><th>مقدار</th></tr></thead><tbody>`;
+                let found = false;
+                categories.forEach(cat => {
+                    const values = item[cat.key] || [];
+                    if (values.length === 0) {
+                        html += `<tr><td class="type-cell">${cat.label}</td><td class="value-cell">—</td></tr>`;
+                    } else {
+                        found = true;
+                        values.forEach(v => {
+                            html += `<tr><td class="type-cell">${cat.label}</td><td class="value-cell">${v}</td></tr>`;
+                        });
+                    }
+                });
+                if (!found) {
+                    html += `<tr><td colspan="2" style="text-align:center; color:#6a8aaa;">داده‌ای یافت نشد</td></tr>`;
+                }
+                html += `</tbody></table>`;
+                contentDiv.innerHTML = html;
+                detailDiv.classList.add('active');
+
+                // اسکرول به قسمت جزئیات
+                detailDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+            } catch (err) {
+                contentDiv.innerHTML = `<div style="color:#ff6b6b;">❌ ${err.message}</div>`;
+                detailDiv.classList.add('active');
+            }
+        }
+
+        // بارگذاری تاریخچه هنگام کلیک روی تب
+        document.getElementById('refreshHistory').addEventListener('click', loadHistory);
+
+        // Normalize URL
         urlInput.addEventListener('blur', function() {
             let val = this.value.trim();
             if (val && !val.startsWith('http://') && !val.startsWith('https://')) {
                 this.value = 'https://' + val;
             }
         });
+
+        // بارگذاری اولیه تاریخچه اگر تب فعال باشه (فعلاً غیرفعال)
     </script>
 </body>
 </html>
@@ -1009,7 +1220,7 @@ def main():
                         extract_mobile=True,
                         extract_landline=True,
                         extract_email=True,
-                        extract_links=True,
+                        extract_links=False,
                         extract_instagram=True,
                         extract_youtube=True
                     )
