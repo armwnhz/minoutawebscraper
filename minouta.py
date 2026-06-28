@@ -30,7 +30,7 @@ from pydantic import BaseModel
 import uvicorn
 
 # ============================================================
-# 📝 توابع اصلی استخراج
+# 📝 توابع اصلی استخراج (با رجکس‌های سراسری اما با نام‌های منحصربه‌فرد)
 # ============================================================
 
 def normalize_url(user_input: str) -> str:
@@ -43,13 +43,13 @@ def normalize_url(user_input: str) -> str:
         return user_input
     return user_input
 
-# تعریف رجکس‌ها برای شماره و ایمیل (اینها تداخل ندارن)
-MOBILE_REGEX = re.compile(r'(?<!\d)(?:0|\+98)9[0-9]{9}(?!\d)')
-LANDLINE_REGEX = re.compile(r'(?<!\d)(?:\+98|0098)?0[1-8][0-9]{9}(?!\d)')
-EMAIL_REGEX = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.IGNORECASE)
-
-# رجکس‌های لینک و شبکه‌های اجتماعی رو داخل خود توابع تعریف میکنیم
-# تا از تداخل با متغیرهای دیگه جلوگیری بشه
+# ✅ رجکس‌ها رو با یه پیشوند خاص تعریف می‌کنیم تا با هیچ متغیر دیگه‌ای تداخل نکنه
+_PATTERN_MOBILE = re.compile(r'(?<!\d)(?:0|\+98)9[0-9]{9}(?!\d)')
+_PATTERN_LANDLINE = re.compile(r'(?<!\d)(?:\+98|0098)?0[1-8][0-9]{9}(?!\d)')
+_PATTERN_EMAIL = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.IGNORECASE)
+_PATTERN_URL = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+', re.IGNORECASE)
+_PATTERN_INSTAGRAM = re.compile(r'https?://(?:www\.)?instagram\.com/([a-zA-Z0-9_.]+)/?', re.IGNORECASE)
+_PATTERN_YOUTUBE = re.compile(r'https?://(?:www\.)?youtube\.com/(?:@|c/|user/|channel/)([a-zA-Z0-9_-]+)/?', re.IGNORECASE)
 
 def _normalize_phone(num: str) -> str:
     if num.startswith('+98'):
@@ -59,19 +59,18 @@ def _normalize_phone(num: str) -> str:
     return num
 
 def extract_phones(text: str):
-    mobiles_raw = MOBILE_REGEX.findall(text)
-    landlines_raw = LANDLINE_REGEX.findall(text)
+    mobiles_raw = _PATTERN_MOBILE.findall(text)
+    landlines_raw = _PATTERN_LANDLINE.findall(text)
     mobiles = list(dict.fromkeys(_normalize_phone(n) for n in mobiles_raw))
     landlines = list(dict.fromkeys(_normalize_phone(n) for n in landlines_raw))
     return mobiles, landlines
 
 def extract_emails(text: str):
-    return list(dict.fromkeys(EMAIL_REGEX.findall(text)))
+    return list(dict.fromkeys(_PATTERN_EMAIL.findall(text)))
 
-# ✅ اصلاح شده: رجکس لینک داخل تابع تعریف شده
 def extract_links(text: str, base_url: str = ""):
-    url_pattern = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+', re.IGNORECASE)
-    links = url_pattern.findall(text)
+    # ✅ استفاده از رجکس سراسری با نام منحصربه‌فرد
+    links = _PATTERN_URL.findall(text)
     if base_url:
         absolute_links = []
         for link in links:
@@ -81,15 +80,11 @@ def extract_links(text: str, base_url: str = ""):
         return absolute_links
     return links
 
-# ✅ اصلاح شده: رجکس اینستاگرام داخل تابع تعریف شده
 def extract_instagram_handles(text: str):
-    instagram_pattern = re.compile(r'https?://(?:www\.)?instagram\.com/([a-zA-Z0-9_.]+)/?', re.IGNORECASE)
-    return list(dict.fromkeys(instagram_pattern.findall(text)))
+    return list(dict.fromkeys(_PATTERN_INSTAGRAM.findall(text)))
 
-# ✅ اصلاح شده: رجکس یوتیوب داخل تابع تعریف شده
 def extract_youtube_handles(text: str):
-    youtube_pattern = re.compile(r'https?://(?:www\.)?youtube\.com/(?:@|c/|user/|channel/)([a-zA-Z0-9_-]+)/?', re.IGNORECASE)
-    return list(dict.fromkeys(youtube_pattern.findall(text)))
+    return list(dict.fromkeys(_PATTERN_YOUTUBE.findall(text)))
 
 # ============================================================
 # 🌐 دریافت محتوا
