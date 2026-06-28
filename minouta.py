@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ============================================================
-# 🕷️ Minouta Web Scraper - Core + Auth + Web UI
+# 🕷️ Minouta Web Scraper - Core + Auth + Full Web UI
 # ============================================================
 
 import sys
@@ -11,7 +11,7 @@ import os
 from urllib.parse import urljoin
 from typing import List, Dict, Optional
 from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import requests
 from rich.console import Console
@@ -26,7 +26,6 @@ from sqlalchemy.orm import declarative_base, sessionmaker, Session, relationship
 from fastapi import FastAPI, HTTPException, Depends, status, Request, Response
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr
 import uvicorn
 
@@ -36,7 +35,6 @@ import uvicorn
 
 from passlib.context import CryptContext
 from jose import JWTError, jwt
-from datetime import timezone
 
 # تنظیمات JWT
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-this-in-production")
@@ -44,7 +42,6 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 ساعت
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
@@ -109,7 +106,7 @@ _INSTAGRAM_REGEX = re.compile(r'https?://(?:www\.)?instagram\.com/([a-zA-Z0-9_.]
 _YOUTUBE_REGEX = re.compile(r'https?://(?:www\.)?youtube\.com/(?:@|c/|user/|channel/)([a-zA-Z0-9_-]+)/?', re.IGNORECASE)
 
 def extract_links(text: str, base_url: str = ""):
-    return []  # غیرفعال شده
+    return []  # غیرفعال شده به دلیل خطای bool
 
 def _normalize_phone(num: str) -> str:
     if num.startswith('+98'):
@@ -238,7 +235,6 @@ class User(Base):
     hashed_password = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.now)
     
-    # ارتباط با تاریخچه اسکرپ‌ها
     histories = relationship("ScrapeHistory", back_populates="user", cascade="all, delete-orphan")
 
 class ScrapeHistory(Base):
@@ -256,7 +252,6 @@ class ScrapeHistory(Base):
     youtube = Column(JSON, default=list)
     raw_data = Column(Text, nullable=True)
     
-    # ارتباط با کاربر
     user = relationship("User", back_populates="histories")
 
 Base.metadata.create_all(bind=engine)
@@ -292,7 +287,7 @@ class DatabaseManager:
         self.session.close()
 
 # ============================================================
-# 🎨 رابط کاربری با Rich (CLI) - همان کد قبلی
+# 🎨 رابط کاربری با Rich (CLI)
 # ============================================================
 
 console = Console()
@@ -300,7 +295,6 @@ console = Console()
 class RichCLI:
     def __init__(self):
         self.engine = ScraperEngine()
-        self.db = DatabaseManager()
 
     def run(self):
         self._show_header()
@@ -308,27 +302,21 @@ class RichCLI:
             self._show_menu()
             choice = Prompt.ask(
                 "[bold cyan]Select option[/]",
-                choices=["1", "2", "3", "4", "5", "q"],
+                choices=["1", "2", "q"],
                 default="1"
             )
             if choice == "1":
                 self._scrape_single()
             elif choice == "2":
                 self._scrape_multiple()
-            elif choice == "3":
-                self._show_history()
-            elif choice == "4":
-                self._settings()
-            elif choice == "5":
-                self._export_data()
             elif choice.lower() == "q":
                 console.print("[bold red]Goodbye![/]")
                 break
 
     def _show_header(self):
         console.print(Panel.fit(
-            "[bold yellow]🕷️ Minouta Web Scraper[/]\n"
-            "[italic]Extract phones, emails, links, social IDs[/]",
+            "[bold yellow]🕷️ Minouta Web Scraper (CLI)[/]\n"
+            "[italic]Extract phones, emails, social IDs[/]",
             border_style="blue"
         ))
 
@@ -336,9 +324,6 @@ class RichCLI:
         console.print("\n[bold]Main Menu[/]")
         console.print("1. Scrape Single URL")
         console.print("2. Scrape Multiple URLs (comma separated)")
-        console.print("3. View History")
-        console.print("4. Settings (timeout, proxy, user-agent)")
-        console.print("5. Export Results")
         console.print("q. Quit")
 
     def _get_extract_options(self) -> dict:
@@ -346,14 +331,13 @@ class RichCLI:
         extract_mobile = Confirm.ask("📱 Mobile", default=True)
         extract_landline = Confirm.ask("🏠 Landline", default=True)
         extract_email = Confirm.ask("✉️ Email", default=True)
-        extract_links = Confirm.ask("🔗 Links", default=False)
         extract_instagram = Confirm.ask("📸 Instagram", default=False)
         extract_youtube = Confirm.ask("▶️ YouTube", default=False)
         return {
             "extract_mobile": extract_mobile,
             "extract_landline": extract_landline,
             "extract_email": extract_email,
-            "extract_links": extract_links,
+            "extract_links": False,
             "extract_instagram": extract_instagram,
             "extract_youtube": extract_youtube
         }
@@ -371,7 +355,6 @@ class RichCLI:
         ) as progress:
             task = progress.add_task("Scraping...", total=None)
             try:
-                # در حالت CLI، کاربری وجود ندارد، پس بدون ذخیره در دیتابیس
                 result = self.engine.scrape(url, **options)
                 self._display_result(result)
             except Exception as e:
@@ -417,30 +400,10 @@ class RichCLI:
 
         console.print(table)
 
-    def _show_history(self):
-        console.print("[yellow]CLI mode does not support user-specific history. Please use Web UI.[/]")
-
-    def _settings(self):
-        console.print("[bold]Current Settings:[/]")
-        console.print(f"Timeout: {self.engine.timeout}s")
-        console.print(f"User-Agent: {self.engine.user_agent or 'Default'}")
-        console.print(f"Proxy: {self.engine.proxy or 'None'}")
-        if Confirm.ask("Change settings?"):
-            self.engine.timeout = IntPrompt.ask("Timeout (seconds)", default=self.engine.timeout)
-            ua = Prompt.ask("User-Agent (leave empty for default)", default=self.engine.user_agent or "")
-            self.engine.user_agent = ua if ua else None
-            proxy = Prompt.ask("Proxy (e.g. http://proxy:8080, leave empty for none)", default=self.engine.proxy or "")
-            self.engine.proxy = proxy if proxy else None
-            console.print("[green]Settings updated.[/]")
-
-    def _export_data(self):
-        console.print("[yellow]CLI mode does not support export. Please use Web UI.[/]")
-
 # ============================================================
-# 🌐 صفحات HTML برای احراز هویت و رابط کاربری
+# 🌐 صفحات HTML
 # ============================================================
 
-# صفحه ورود
 LOGIN_PAGE = """
 <!DOCTYPE html>
 <html lang="fa" dir="rtl">
@@ -593,7 +556,6 @@ LOGIN_PAGE = """
 </html>
 """
 
-# صفحه ثبت نام
 REGISTER_PAGE = """
 <!DOCTYPE html>
 <html lang="fa" dir="rtl">
@@ -755,7 +717,6 @@ REGISTER_PAGE = """
 </html>
 """
 
-# صفحه اصلی برنامه (بعد از ورود)
 APP_PAGE = """
 <!DOCTYPE html>
 <html lang="fa" dir="rtl">
@@ -926,11 +887,6 @@ APP_PAGE = """
         }
         .btn:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(79,172,254,0.3); }
         .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
-        .btn-small {
-            width: auto;
-            padding: 8px 20px;
-            font-size: 0.9rem;
-        }
         .loading {
             display: none;
             text-align: center;
@@ -1052,12 +1008,12 @@ APP_PAGE = """
             gap: 10px;
             flex-wrap: wrap;
         }
-        .export-section .btn-small {
+        .export-section .btn-outline {
             background: rgba(79,172,254,0.15);
             border: 1px solid rgba(79,172,254,0.2);
             color: #8ab4ff;
         }
-        .export-section .btn-small:hover {
+        .export-section .btn-outline:hover {
             background: rgba(79,172,254,0.25);
         }
         .footer {
@@ -1144,7 +1100,6 @@ APP_PAGE = """
     <script>
         const API_BASE = window.location.origin;
         let currentUser = null;
-        let currentHistoryData = [];
 
         // ======== دریافت اطلاعات کاربر ========
         async function loadUser() {
@@ -1258,7 +1213,6 @@ APP_PAGE = """
                 const resp = await fetch(`${API_BASE}/history?limit=50`);
                 if (!resp.ok) throw new Error('خطا');
                 const data = await resp.json();
-                currentHistoryData = data;
                 if (!data || data.length === 0) {
                     listEl.innerHTML = '<div style="text-align:center; color:#6a8aaa; padding:20px;">هیچ اسکرپی ثبت نشده است.</div>';
                     return;
@@ -1402,8 +1356,13 @@ class ScrapeRequest(BaseModel):
     save_history: bool = True
 
 # ============================================================
-# 🔐 مسیرهای احراز هویت
+# 🌐 مسیرهای صفحات (با ریدایرکت ریشه)
 # ============================================================
+
+@app.get("/", response_class=RedirectResponse)
+async def root():
+    """هدایت کاربر به صفحه ورود"""
+    return RedirectResponse(url="/login")
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page():
@@ -1417,10 +1376,13 @@ async def register_page():
 async def app_page():
     return APP_PAGE
 
+# ============================================================
+# 🔐 مسیرهای احراز هویت
+# ============================================================
+
 @app.post("/auth/register")
 async def register(user_data: UserCreate):
     db = SessionLocal()
-    # بررسی وجود کاربر
     existing_user = db.query(User).filter(
         (User.username == user_data.username) | (User.email == user_data.email)
     ).first()
@@ -1628,7 +1590,6 @@ def main():
             print("Unknown mode. Available: api, cli")
             return
     
-    # پیش‌فرض: اجرای حالت API
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
 if __name__ == "__main__":
