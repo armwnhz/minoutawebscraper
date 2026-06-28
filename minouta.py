@@ -172,8 +172,11 @@ DATABASE_URL_ENV = os.getenv("DATABASE_URL", None)
 if DATABASE_URL_ENV:
     SQLALCHEMY_DATABASE_URL = DATABASE_URL_ENV
 else:
-    DB_PATH = os.path.join(BASE_DIR, "scraper.db")
-    SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
+    # استفاده از پوشه‌ی موقت برای ذخیره‌ی دیتابیس در محیط ابری
+    import tempfile
+    db_dir = tempfile.gettempdir()
+    db_path = os.path.join(db_dir, "scraper.db")
+    SQLALCHEMY_DATABASE_URL = f"sqlite:///{db_path}"
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in SQLALCHEMY_DATABASE_URL else {})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -477,7 +480,12 @@ def scrape_api(request: ScrapeRequest):
             )
             if request.save_history:
                 db_manager.save_result(result)
-            results.append(asdict(result))
+            
+            # ✅ تبدیل datetime به رشته برای JSON serialization
+            result_dict = asdict(result)
+            result_dict['timestamp'] = result_dict['timestamp'].isoformat()
+            results.append(result_dict)
+            
         except Exception as e:
             results.append({"url": url, "error": str(e)})
     return JSONResponse(content={"results": results})
@@ -516,6 +524,10 @@ def get_history_item(id: int):
         "instagram": rec.instagram,
         "youtube": rec.youtube
     }
+
+@app.get("/ping")
+def ping():
+    return {"status": "ok"}
 
 # ============================================================
 # 🚀 نقطه ورود برنامه
